@@ -1,0 +1,85 @@
+services:
+  # Local LiveKit dev server. --dev enables verbose logging and a permissive
+  # default config; LIVEKIT_KEYS is overridden below so the devkey/secret
+  # match whatever's in .env (falls back to .env.example's values if .env
+  # doesn't exist yet).
+  livekit-server:
+    image: livekit/livekit-server:latest
+    container_name: t10-livekit-server
+    command: --dev --bind 0.0.0.0 --node-ip=127.0.0.1
+    restart: unless-stopped
+    environment:
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-change-me-to-a-32-plus-character-secret}"
+    ports:
+      # Non-default host ports so this doesn't collide with another LiveKit
+      # dev server (e.g. a separate project's own docker-compose) also using
+      # the conventional 7880-7882 on the same machine. Container-internal
+      # ports stay at the LiveKit defaults; only the host-side mapping shifts.
+      # (8880-8882 turned out to collide with another project's dev LiveKit
+      # server too, so this shifted again to 8890-8892.)
+      - "8890:7880" # WebSocket signaling
+      - "8891:7881" # WebRTC over TCP (ICE-TCP fallback)
+      - "8892:7882/udp" # WebRTC over UDP (primary media)
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7880 || exit 0"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks:
+      - t10-net
+
+  agent:
+    build: .
+    image: t10-agent:latest
+    container_name: t10-livekit-agent
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Inside the compose network, reach LiveKit by service name and its
+      # container-internal port (unaffected by the host port remap above);
+      # the LIVEKIT_URL in .env (ws://localhost:8890) is for processes
+      # running on the host, like cmd/testclient.
+      LIVEKIT_URL: ws://livekit-server:7880
+      # Overrides any OTEL_EXPORTER_OTLP_ENDPOINT in .env — the containerized
+      # agent always reaches the collector by service name. See
+      # internal/telemetry.SetupOTel and the otel-lgtm service below.
+      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+    depends_on:
+      livekit-server:
+        condition: service_healthy
+      otel-lgtm:
+        condition: service_started
+    networks:
+      - t10-net
+
+  # Unified OpenTelemetry observability backend: bundles OTel Collector,
+  # Tempo (traces), Loki (logs), Prometheus/Mimir (metrics), and Grafana (UI)
+  # in a single container. Both agent and client export traces, metrics, and
+  # logs to this single endpoint via OTLP/gRPC on :4317.
+  otel-lgtm:
+    image: grafana/otel-lgtm:latest
+    container_name: t10-otel-lgtm
+    pull_policy: never
+    restart: unless-stopped
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+    ports:
+      # Unified Grafana UI: http://localhost:3002 (Traces, Metrics, Logs)
+      - "3002:3000"
+      # OTLP gRPC receiver (for client on host and agent in container)
+      - "4317:4317"
+      # OTLP HTTP receiver (shifted to 4319 to avoid host port collision)
+      - "4319:4318"
+    networks:
+      t10-net:
+        aliases:
+          - otel-collector
+          - otel-lgtm
+
+networks:
+  t10-net:
+    name: t10-net

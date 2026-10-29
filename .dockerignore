@@ -1,0 +1,7 @@
+.git
+.env
+.env.local
+*.wav
+/t10-livekit-agent
+/agent
+/testclient

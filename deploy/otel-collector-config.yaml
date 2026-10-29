@@ -1,0 +1,50 @@
+# OTel Collector config for the t10 stack. agent (containerized) and client
+# (a host binary) both export OTLP/gRPC here — see docker-compose.yml's
+# otel-collector service and internal/telemetry.SetupOTel. This is the only
+# thing either process talks to directly; it fans traces out to Jaeger and
+# metrics out to a Prometheus-scrapeable endpoint, so the backends can
+# change without touching agent/client config.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 200
+  batch:
+
+exporters:
+  # Jaeger has spoken native OTLP since 1.35 — no dedicated "jaeger"
+  # exporter component needed, just point a plain otlp exporter at it.
+  otlp_grpc/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  prometheus:
+    endpoint: 0.0.0.0:8889
+  otlp_http/loki:
+    endpoint: http://loki:3100/otlp
+    tls:
+      insecure: true
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_grpc/jaeger, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus, debug]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp_http/loki, debug]

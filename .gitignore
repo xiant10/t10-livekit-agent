@@ -1,0 +1,52 @@
+# Binaries and outputs
+/t10-livekit-agent
+/agent
+/testclient
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries and coverage
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Audio recordings and test files
+*.wav
+*.pcm
+
+# OS artifacts
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDEs and editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+.claude/
+.gemini/
+
+# Temporary and log files
+tmp/
+*.log
+/t10-agent.log

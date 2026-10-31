@@ -97,3 +97,26 @@ func TestSpeechChunkerBreaksRunOnSentences(t *testing.T) {
 		t.Errorf("chunks rejoin to %q, want %q", joined, long)
 	}
 }
+
+func TestSpeechText(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"早上好！", "早上好！"},
+		{" 第二句。", " 第二句。"},
+		{"我目前仅能调用：`load_skill`、`search_tools` 和 `consult_expert`。", "我目前仅能调用：load skill、search tools 和 consult expert。"},
+		{"  \n- `load_skill`：加载技能；  \n- `search_tools`：查找工具。", " load skill：加载技能； search tools：查找工具。"},
+		{"* 一项\n+ 两项\n• 三项", "一项 两项 三项"},
+		{"## 标题\n> 引用", "标题 引用"},
+		{"这是**重点**和~~删除~~。", "这是重点和删除。"},
+		{"请看[说明](https://example.com/a)和![图](b.png)。", "请看说明和图。"},
+		{"| 名称 | 值 |\n|---|---|\n| a | b |", "名称 值 a b"},
+		{"```go\nfmt.Println()\n```", "fmt.Println()"},
+		{"---", ""},
+		{"1. 打开应用", "1. 打开应用"},
+		{"五到十 - 大约这样", "五到十 - 大约这样"},
+		{"5~10 度", "5~10 度"},
+	} {
+		if got := speechText(tc.in); got != tc.want {
+			t.Errorf("speechText(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

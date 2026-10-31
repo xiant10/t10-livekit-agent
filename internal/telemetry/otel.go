@@ -19,7 +19,7 @@ import (
 
 // SetupOTel wires endpoint (an OTLP/gRPC host:port, e.g.
 // "otel-collector:4317" — no scheme) up as this process's real trace and
-// metric pipeline: every StartSession/StartStage span this package produces
+// metric pipeline: every StartTurn/StartStage span this package produces
 // from here on gets batched and exported, and every StartStage duration/
 // count is exported as a metric. serviceName identifies this process in the
 // backend (e.g. Jaeger's service dropdown) — use a different one per

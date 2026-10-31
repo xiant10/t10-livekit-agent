@@ -33,6 +33,7 @@ func RunVoiceTurn(ctx context.Context, deps *Deps, identity string, pcm16k []byt
 		return nil, 0, err
 	}
 	defer release()
+	ctx = turnContext(ctx, identity, release)
 	sttCtx, sttEnd := telemetry.StartStage(ctx, "stt.transcribe_batch")
 	transcript, err := deps.STT.TranscribeBatch(sttCtx, pcm16k, "")
 	sttEnd(err)
@@ -90,6 +91,7 @@ func RunVoiceTurn(ctx context.Context, deps *Deps, identity string, pcm16k []byt
 	}()
 	chunker := newSpeechChunker(80, 160)
 	submit := func(text string) {
+		text = speechText(text)
 		if strings.TrimSpace(text) != "" {
 			select {
 			case chunks <- text:

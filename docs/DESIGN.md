@@ -334,8 +334,9 @@ Three further pieces make an interruption feel like one:
 
 `speechChunker` (`sentence.go`) slices the token stream into what actually
 gets synthesized. One TTS call per sentence — the original design — is the
-wrong granularity in both directions. Every `Synthesize` is its own provider
-WebSocket handshake, about a second of fixed cost whatever the length, and
+wrong granularity in both directions. Every synthesis is its own provider
+WebSocket session, about a second of fixed cost whatever the length unless
+`Warm` opened it ahead of the reply's first chunk, and
 firing them all at once made them queue against each other at the far end: on
 one measured reply, 18 concurrent calls, three-character chunks taking 7.7s,
 and one hitting the provider's 20s idle timeout and being lost outright. So
@@ -369,77 +370,95 @@ frame so the queue can reach empty. Turn admission and enqueue serialize
 with barge-in using the controller mutex. State and sink callbacks must
 return promptly; no provider I/O or playback wait runs under that mutex.
 
-## 7. Correlation IDs, tracing, and metrics
+## 7. Sessions, turns, tracing, and metrics
 
 Text mode, voice-message mode, and live-call mode each spin up their own
 goroutine per client-initiated unit of work, all calling into the same
-`internal/engine`/`internal/provider` layers concurrently. Without something
-tying a given turn's log lines together, interleaved output from two
-participants (or two overlapping voice messages from one) is impossible to
-follow. `internal/telemetry` fixes that with a correlation ID threaded on
-`context.Context`, rather than a field every call site has to remember to
-pass:
+`internal/engine`/`internal/provider` layers concurrently, and one reply
+crosses three processes and a model gateway. `internal/telemetry` ties that
+together with IDs threaded on `context.Context`, rather than a field every call
+site has to remember to pass.
 
-- `telemetry.StartSession(ctx)` is called exactly once per client-initiated
-  **request or session** — the text/voice stream handlers call it per
-  message (`internal/livekit/text_mode.go`, `voice_mode.go`), and
-  `agent.go`'s `OnTrackSubscribed` calls it once for the whole life of a
-  live call. It stamps a random OpenTelemetry trace ID
-  (`go.opentelemetry.io/otel/trace`) onto a derived context.
-- Every context derived from that one afterwards — `context.WithCancel`,
-  `context.WithTimeout`, the per-utterance and per-turn contexts
-  `LiveCallController` creates in `live_turn.go` — carries the same ID,
-  because OTel's `SpanContext` rides along as an ordinary context value.
-  `LiveCallController` holds the call's context as `sessionCtx` for exactly
-  this reason: one ID covers every utterance and turn of a call, not just
-  its start.
-- Log call sites use the `*Context` slog variants (`slog.InfoContext`,
-  `slog.ErrorContext`) instead of the plain ones. `cmd/agent/main.go` sets
-  the default logger's handler to `telemetry.NewLogHandler(base)`, which
-  reads the ID off the context and attaches it as a `correlation_id`
-  attribute — so call sites never format it themselves:
+| Level | ID | Lifetime | Comes from |
+|---|---|---|---|
+| Conversation | identity; `agentpi.session_id` | Across connections | Exists already |
+| Session | `session.id` / `session_id` = LiveKit participant SID | One connection | Both ends already know it |
+| Turn | `turn_id` = trace ID | One input through to the reply | Whichever end starts it |
+| Attempt | `request_id`, agent-pi `requestId` | One send | Span attributes, not used to group |
 
-  ```
-  time=... level=INFO msg="live call: heard" identity=bob text="hello" correlation_id=4bf92f3577b34da6a3ce929d0e0e4736
-  ```
+**A turn is a trace.** A call used to be one trace: its root span was only
+exported when the call ended, and nothing in it said where one turn stopped.
+Now `turn_id` can be pasted straight into Tempo, and `session.id` on every span
+and `session_id` on every log line group a session's turns:
 
-Using OTel's trace-ID type instead of a bespoke UUID was deliberate groundwork
-for exactly what's wired up now: `telemetry.SetupOTel` (`internal/telemetry/otel.go`)
-installs a real `sdktrace.TracerProvider`/`sdkmetric.MeterProvider` exporting
-OTLP/gRPC to `docker-compose.yml`'s `otel-lgtm` service (also reachable via
-the `otel-collector` alias). Grafana at http://localhost:3002 provides traces,
-metrics and logs; the older files in `deploy/` are not used by this Compose stack. Every call site already just passed
-`ctx` around, so this was purely additive:
+```text
+{ span.session.id = "PA_xxx" }                  # TraceQL: every turn of a call
+{ span.turn.outcome = "interrupted" }           # TraceQL: every cut-off reply
+{service_name="t10-agent"} | session_id="PA_xxx"   # LogQL
+```
 
-- `StartSession` now also opens a root `"session"` span (closed by its
-  returned func) instead of only stamping a bare `SpanContext` — the exact
-  same trace ID, now actually exported.
-- `telemetry.StartStage(ctx, name, attrs...)` starts a child span for one
-  STT/LLM/TTS provider call or one live-call turn and starts a timer; the
-  returned `end(err)` records the error (if any) on the span, closes it, and
-  records the stage's duration and outcome as the `t10.stage.duration`/
-  `t10.stage.calls` metrics, tagged by `stage` and `error` — one call site
-  drives both a trace and a metric. See `engine/chat.go`'s `RunChatTurn`,
-  `engine/live_turn.go`'s `commitUtterance`/`handleTurn`/`synthesizeChunk`, and
-  `engine/voice.go`'s `RunVoiceTurn` for the call sites.
-- Both StartSession's span and every StartStage span/metric are no-ops
-  until `SetupOTel` is called — gated on `OTEL_EXPORTER_OTLP_ENDPOINT` in
-  `cmd/agent/main.go` — so nothing here behaves differently, and
-  `CorrelationID` returns the same ID either way, whether or not an OTLP
-  endpoint is configured. This was verified empirically (not just assumed
-  from the API docs): a fabricated `SpanContext` marked `Remote: true`
-  survives being wrapped in a no-op span exactly as it does a real one,
-  because `trace.SpanContextFromContext` — what `CorrelationID` and the
-  real SDK's own span-parenting both call — checks the remote marker before
-  falling back to an ambient `Span` object.
-- The client (a separate module — see `../../mac-client/CLAUDE.md`) has its own
-  trimmed copy of this same package, exporting to the same collector over
-  its published host port. A trace ID logged on one side is *not* the same
-  trace as the other's today — the two only share a room, not a trace
-  context — so a client-observed round trip and the agent-side spans that
-  produced it show up as separate traces in Tempo. Propagating one trace
-  context across the LiveKit room (e.g. via a text-stream attribute) would
-  unify them; that's future work, not done here.
+There is no session span, for the same reason there is no call span. Never put
+a session or turn ID on a metric: they are unbounded.
+
+```text
+conversation.turn   root; session.id, turn.outcome, turn.first_audio_ms, request_id
+├─ client.exchange / client.first_audio    client process
+├─ utterance ×N → stt.commit
+└─ turn             the reply, as stage="turn" has always measured it
+   ├─ llm.chat_stream
+   │  └─ agent.submission                  agent-pi process
+   │     ├─ agent.model ×N → model gateway
+   │     └─ agent.tool ×N
+   ├─ tts.synthesize ×N
+   └─ playback
+```
+
+**Who starts a turn.** The client starts text and voice messages: it sends a
+W3C `traceparent` next to `request_id` as a stream attribute, and
+`telemetry.StartTurn` continues that trace. Only the agent's VAD knows a live
+turn has begun, so there the agent starts it and stamps `turn_id` and
+`traceparent` on its state, transcript and reply streams; the client joins to
+record `client.first_audio`. A peer that sends neither is still answered, in a
+trace of its own, and an older peer ignores the attributes.
+
+**A live turn starts at the speech, not the reply**, because the speech is what
+the caller's wait is measured from (`turn.first_audio_ms`, from the end of their
+speech). `liveTurn` in `live_turn.go`: the first speech with no turn pending
+opens one, under the mutex that decides barge-ins. Everything said before the
+reply starts joins it, so a coalesced pause is one turn with two `utterance`
+spans. `handleTurn` claims it, and speech after that opens the next one, linked
+to the turn it cut off. Speech that yields no words ends as `no_speech`, so a
+false barge-in reads as `interrupted` followed by a linked `no_speech`.
+
+`turn.outcome` is `completed`, `interrupted`, `superseded` (a newer message took
+over), `failed`, `no_speech` or `call_ended`, and tags the `t10.turn.outcomes`
+metric. `telemetry.MarkOutcome` lets code that knows why, but doesn't own the
+turn, record it.
+
+**Into agent-pi.** `internal/provider/agentpi` sends the bare trace ID as
+`turnId` and a `traceparent` header on every request, so a resubmission stays
+the same turn. agent-pi's side is in its own `docs/lifecycle.md`. An interrupted
+run goes on until the next message reaches it, so `agent.submission` can
+outlive its parent span; that is what happened, not a clock problem.
+
+`telemetry.StartStage(ctx, name, attrs...)` is the one call that drives both a
+span and the `t10.stage.duration`/`t10.stage.calls` metrics, tagged by `stage`
+and `error`. All of this is a no-op until `telemetry.SetupOTel` installs an SDK
+(gated on `OTEL_EXPORTER_OTLP_ENDPOINT` in `cmd/agent/main.go`): `StartTurn` then
+mints a trace ID itself, so logs and propagation behave the same either way.
+
+Log call sites use the `*Context` slog variants. `telemetry.NewLogHandler` adds
+`session_id` and `turn_id`; it wraps `NewOTelLogHandler` rather than the other
+way round, or the IDs would reach the local log but not Loki:
+
+```
+time=... level=INFO msg="live call: heard" identity=bob utterance_id=3 text="hello" session_id=PA_xxx turn_id=4bf92f3577b34da6a3ce929d0e0e4736
+```
+
+The client (a separate module — see `../../mac-client/CLAUDE.md`) has its own
+trimmed copy of this package, exporting to the same collector over its
+published host port. Grafana at http://localhost:3002 provides traces, metrics
+and logs; the older files in `deploy/` are not used by this Compose stack.
 
 ## 8. Deliberate simplifications vs. the Python original
 
@@ -486,12 +505,12 @@ go run ./cmd/testclient live  -file sample.wav -out reply.wav \
     -interrupt-file interrupt.wav -interrupt-after 10
 ```
 
-Each command above is a separate request/session (see §7): watch
+Each command above is a separate connection (see §7): watch
 `docker compose logs -f agent` while running one and every log line for it
-shares one `correlation_id`, e.g.:
+shares one `session_id`, and every line of one turn one `turn_id`, e.g.:
 
 ```bash
-docker compose logs -f agent | grep <correlation_id printed for that run>
+docker compose logs -f agent | grep <session_id printed for that run>
 ```
 
 The agent container's `LIVEKIT_URL` is overridden to `ws://livekit-server:7880`

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"regexp"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -44,6 +45,38 @@ func speakableRunes(text string) int {
 
 func hasSpeakableContent(text string) bool { return speakableRunes(text) > 0 }
 
+var (
+	markdownFenceRe  = regexp.MustCompile("(?m)^[ \t]*(?:```|~~~).*$")
+	markdownRuleRe   = regexp.MustCompile(`(?m)^[ \t|:*_-]*[-*_]{3,}[ \t|:*_-]*$`)
+	markdownPrefixRe = regexp.MustCompile(`(?m)^[ \t]*(?:#{1,6}[ \t]+|>[ \t]*|[-*+•][ \t]+)`)
+	markdownLinkRe   = regexp.MustCompile(`!?\[([^\]]*)\]\([^)]*\)`)
+	markdownMarkRe   = regexp.MustCompile("`|\\*+|~~")
+)
+
+// speechText removes the markdown a model writes despite being told not to,
+// so that it is neither read aloud nor captioned. It works on the text of one
+// chunk, which is enough: a mark split across two chunks is removed from
+// each. Numbered list markers stay, because the order is worth hearing.
+//
+// An underscore becomes a space rather than disappearing: load_skill should
+// be said as two words, not as "loadskill".
+func speechText(text string) string {
+	cleaned := markdownFenceRe.ReplaceAllString(text, "")
+	cleaned = markdownRuleRe.ReplaceAllString(cleaned, "")
+	cleaned = markdownPrefixRe.ReplaceAllString(cleaned, "")
+	cleaned = markdownLinkRe.ReplaceAllString(cleaned, "$1")
+	cleaned = markdownMarkRe.ReplaceAllString(cleaned, "")
+	cleaned = strings.NewReplacer("_", " ", "|", " ").Replace(cleaned)
+
+	words := strings.Join(strings.Fields(cleaned), " ")
+	// The space between two sentences lives at the start of the second; see
+	// speechChunker.trim.
+	if words != "" && strings.TrimLeft(text, " \t\r\n") != text {
+		return " " + words
+	}
+	return words
+}
+
 // minSpeakableRunes is how much a chunk has to be *worth* before it earns
 // its own synthesis call. Two is the useful line: it keeps "OK." and "好的。"
 // — real, complete answers someone should hear immediately — while refusing
@@ -69,8 +102,9 @@ const firstChunkClauseRunes = 12
 // synthesized. It exists because "one TTS call per sentence" — what this
 // used to do — is the wrong granularity in both directions:
 //
-//   - Too small. Every Synthesize call is its own provider WebSocket
-//     handshake plus session setup, ~1s of fixed cost regardless of length.
+//   - Too small. Every synthesis is its own provider WebSocket handshake plus
+//     session setup, ~1s of fixed cost regardless of length (only a reply's
+//     first chunk gets a session opened ahead of time; see handleTurn).
 //     A reply chopped into eighteen sentences paid that eighteen times, and
 //     since those calls all ran at once they queued behind each other at the
 //     provider: measured on a real call, three-byte chunks were taking 7.7s

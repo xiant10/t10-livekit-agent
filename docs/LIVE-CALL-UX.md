@@ -216,11 +216,17 @@ because acknowledging it would cost a turn.
 
 ## Where it still falls short
 
-**Time to first audio — 5.5s, target under 2s.** The two levers are
-connection reuse and streaming synthesis, worth about a second each. Both
-live in the TTS client (`internal/provider/qwen/tts.go`); neither touches
-the call logic. After them the next question is the 1.3-second think
-stage, which swings between 0.7s and 1.4s turn to turn.
+**Time to first audio — 5.5s when last traced, target under 2s.** Streaming
+synthesis and a session opened alongside the LLM are now in place. A
+synthesis call's first audio went from about 2.2s to about 0.55s, and one
+call through the whole pipeline reached first audio 1.7s after thinking
+began. That has not been re-measured across real calls. The next question
+is the think stage.
+
+**A chunk's text is released with its first audio.** With streaming, that is
+before the rest of the chunk exists. If synthesis fails partway through, the
+caption and history keep text whose end was never spoken. It is the same
+chunk-granular limit as the two below, reached by a rarer route.
 
 **Captions are chunk-granular — up to several seconds of skew.** When a
 chunk is released, all of its text appears at once while its audio plays
@@ -269,8 +275,9 @@ The code now closes several gaps in the rules above:
 
 These changes are covered by engine and transport regression tests, including
 race-detector runs. They do not establish a new hosted-provider latency figure:
-the timing tables above remain historical measurements. Streaming synthesis,
-connection reuse, word-timed captions, and echo cancellation remain open.
+the timing tables above remain historical measurements. Word-timed captions
+and echo cancellation remain open at the agent; on macOS, the client now uses
+the system's voice processing for echo cancellation.
 
 ---
 
@@ -288,10 +295,10 @@ go run ./cmd/testclient live \
 ```
 
 Then read the trace at <http://localhost:16687>, or pull it by the
-`correlation_id` the agent logs for the call:
+`turn_id` the agent logs for the turn (each turn is its own trace):
 
 ```bash
-curl -s "http://localhost:16687/api/traces/<correlation_id>"
+curl -s "http://localhost:16687/api/traces/<turn_id>"
 ```
 
 The stage timings are the `stt.commit` / `llm.chat_stream` /

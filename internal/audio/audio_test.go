@@ -89,3 +89,75 @@ func abs(n int) int {
 	}
 	return n
 }
+
+// feed runs alternating loud/quiet stretches (in ms, loud first) through v in
+// 20ms frames and reports whether speech started.
+func feed(v *VAD, stretches ...int) bool {
+	loud, quiet := make([]int16, 320), make([]int16, 320)
+	for i := range loud {
+		loud[i] = 3000
+	}
+	started := false
+	for i, ms := range stretches {
+		frame := loud
+		if i%2 == 1 {
+			frame = quiet
+		}
+		for ; ms > 0; ms -= 20 {
+			started = v.Process(frame, 16000) == EventSpeechStart || started
+		}
+	}
+	return started
+}
+
+func TestVADCountsSpeechAcrossSyllableGaps(t *testing.T) {
+	// Measured from "换个话题吧": about a second of speech, never 400ms unbroken.
+	if !feed(&VAD{EnergyThreshold: 500, MinSpeechMS: 400, MinSilenceMS: 700}, 180, 40, 140, 20, 160, 60, 120) {
+		t.Fatal("a short phrase did not count as speech")
+	}
+}
+
+func TestVADStillIgnoresACough(t *testing.T) {
+	for name, stretches := range map[string][]int{
+		"one cough":                  {300},
+		"two coughs, a breath apart": {200, 300, 200},
+		"tapping":                    {60, 200, 60, 200, 60, 200, 60, 200, 60},
+	} {
+		if feed(&VAD{EnergyThreshold: 500, MinSpeechMS: 400, MinSilenceMS: 700}, stretches...) {
+			t.Fatalf("%s counted as speech", name)
+		}
+	}
+}
+
+func TestStreamResamplerMatchesWholeInputHoweverItIsSplit(t *testing.T) {
+	input := make([]int16, 240)
+	for i := range input {
+		input[i] = int16(8000 * math.Sin(float64(i)/7))
+	}
+	for _, rates := range [][2]int{{24000, 48000}, {24000, 16000}, {16000, 48000}} {
+		whole := NewStreamResampler(rates[0], rates[1]).Push(input)
+		for _, size := range []int{1, 7, 100} {
+			r := NewStreamResampler(rates[0], rates[1])
+			var pieces []int16
+			for start := 0; start < len(input); start += size {
+				pieces = append(pieces, r.Push(input[start:min(start+size, len(input))])...)
+			}
+			// Accumulated position can round one trailing sample either way.
+			if d := len(pieces) - len(whole); d < -1 || d > 1 {
+				t.Fatalf("%v split %d: %d samples, want %d", rates, size, len(pieces), len(whole))
+			}
+			for i := range min(len(pieces), len(whole)) {
+				if d := int(pieces[i]) - int(whole[i]); d < -1 || d > 1 {
+					t.Fatalf("%v split %d: sample %d = %d, want %d", rates, size, i, pieces[i], whole[i])
+				}
+			}
+		}
+	}
+}
+
+func TestStreamResamplerSameRatePassesThrough(t *testing.T) {
+	in := []int16{1, 2, 3}
+	if got := NewStreamResampler(48000, 48000).Push(in); len(got) != 3 || got[2] != 3 {
+		t.Fatalf("got %v", got)
+	}
+}

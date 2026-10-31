@@ -31,6 +31,12 @@ addresses them as follows:
   including the full voice transcription/synthesis turn. Canceled queue entries
   cannot let later work bypass an active predecessor. Admission order is the SDK
   callback order, not a guarantee about two simultaneous sends' network order.
+  With `LLM_PROVIDER=agent_pi` the queue holds only until the provider admits the
+  input, so a second message reaches agent-pi during the first reply. Messages
+  still enter in order, and `AGENT_PI_WHEN_BUSY` decides what happens to that
+  reply. With the default, `auto`, it stops where it was and finishes `done`, unless
+  tools are running: those finish first.
+  See [`AGENT-PI-PROVIDER.md`](AGENT-PI-PROVIDER.md).
 - **Incremental voice output.** A bounded speech-chunk queue feeds one TTS worker
   while the model continues generating. The first sentence can reach the caller
   before the LLM finishes. Each chunk is a complete mono PCM16 WAV, sent on
@@ -258,12 +264,12 @@ go run ./cmd/testclient text  -msg "hello"
 go run ./cmd/testclient voice -file sample.wav -out reply.wav
 ```
 
-then pull the trace by the `correlation_id` the agent logs for that
+then pull the trace by the `turn_id` the agent logs for that
 request, the same way `LIVE-CALL-UX.md`'s own "How these numbers were
 taken" does:
 
 ```bash
-curl -s "http://localhost:16687/api/traces/<correlation_id>"
+curl -s "http://localhost:16687/api/traces/<turn_id>"
 ```
 
 Unlike the live-call numbers, nothing above is quoted from a real trace —

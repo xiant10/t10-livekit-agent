@@ -10,6 +10,7 @@ import (
 
 	"t10-livekit-agent/internal/audio"
 	"t10-livekit-agent/internal/engine"
+	"t10-livekit-agent/internal/provider"
 	"t10-livekit-agent/internal/roomprotocol"
 	"t10-livekit-agent/internal/telemetry"
 )
@@ -22,23 +23,25 @@ const (
 func newVoiceStreamHandler(room *lksdk.Room, deps *engine.Deps, queue *engine.Manager) lksdk.ByteStreamHandler {
 	return func(reader *lksdk.ByteStreamReader, identity string) {
 		enter := queue.Get(identity).ReserveTurn()
-		ctx, end := telemetry.StartSession(context.Background())
-		ctx, cancel := context.WithTimeout(ctx, 50*time.Second)
+		turn := startMessageTurn(room, identity, "voice", reader.Info.Attributes, reader.Info.Id)
+		ctx, cancel := context.WithTimeout(turn.Context(), 50*time.Second)
 		status := newMessageStatus(ctx, room, identity, requestID(reader.Info.Attributes, reader.Info.Id))
 		status.send("queued", "", 0)
 		go func() {
-			defer end()
+			var err error
+			defer func() { turn.End(telemetry.OutcomeCompleted, err) }()
 			defer cancel()
 			defer status.w.Close()
 			sink := &voiceReplySink{ctx: ctx, room: room, identity: identity, status: status}
-			release, err := enter(ctx)
+			var release func()
+			release, err = enter(ctx)
 			if err == nil {
 				defer release()
 				status.send("transcribing", "", 0)
 				var data []byte
 				data, err = readMessage(ctx, reader)
 				if err == nil {
-					err = handleVoiceMessage(ctx, deps, identity, data, sink)
+					err = handleVoiceMessage(provider.WithAdmitted(ctx, release), deps, identity, data, sink)
 				}
 			}
 			status.finish(err, sink.chunks)
@@ -73,7 +76,7 @@ type voiceReplySink struct {
 func (s *voiceReplySink) WriteTranscript(text string) {
 	w := s.room.LocalParticipant.StreamText(lksdk.StreamTextOptions{
 		Topic: roomprotocol.TopicTranscript, DestinationIdentities: []string{s.identity},
-		Attributes: map[string]string{roomprotocol.AttrRequestID: s.status.id},
+		Attributes: turnAttributes(s.ctx, map[string]string{roomprotocol.AttrRequestID: s.status.id}),
 	})
 	_ = writeMessage(s.ctx, w.Write, text)
 	w.Close()
@@ -93,7 +96,7 @@ func (s *voiceReplySink) WriteAudio(pcm []byte, rate int) error {
 	}
 	w := s.room.LocalParticipant.StreamBytes(lksdk.StreamBytesOptions{
 		Topic: roomprotocol.TopicVoice, MimeType: "audio/wav", DestinationIdentities: []string{s.identity},
-		Attributes: map[string]string{roomprotocol.AttrRequestID: s.status.id, roomprotocol.AttrChunkIndex: strconv.Itoa(s.chunks)},
+		Attributes: turnAttributes(s.ctx, map[string]string{roomprotocol.AttrRequestID: s.status.id, roomprotocol.AttrChunkIndex: strconv.Itoa(s.chunks)}),
 	})
 	defer w.Close()
 	if err := writeMessage(s.ctx, w.Write, audio.EncodeWAV(audio.BytesToInt16(pcm), rate, 1)); err != nil {

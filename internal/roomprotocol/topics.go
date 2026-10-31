@@ -63,6 +63,14 @@ const (
 	AttrChunkIndex     = "chunk_index"
 )
 
+// Tracing attributes, on any stream that belongs to a turn: whichever end
+// starts the turn sends these and the other joins its trace. A peer that sends
+// none is still answered, in a trace of its own. See docs/DESIGN.md §7.
+const (
+	AttrTurnID      = "turn_id"
+	AttrTraceparent = "traceparent"
+)
+
 type MessageStatus struct {
 	State       string `json:"state"`
 	Message     string `json:"message,omitempty"`

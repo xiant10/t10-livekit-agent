@@ -19,6 +19,7 @@ import (
 	"t10-livekit-agent/internal/engine"
 	"t10-livekit-agent/internal/livekit"
 	"t10-livekit-agent/internal/provider"
+	_ "t10-livekit-agent/internal/provider/agentpi"
 	_ "t10-livekit-agent/internal/provider/openaicompat"
 	_ "t10-livekit-agent/internal/provider/qwen"
 	"t10-livekit-agent/internal/roomauth"
@@ -66,13 +67,12 @@ func main() {
 		log.SetOutput(file) // LiveKit/Pion SDK use the standard logger.
 	}
 
-	// Wrap the base handler so any log call made with a context that
-	// telemetry.StartSession stamped (one per text/voice message or live
-	// call) automatically carries that request/session's correlation ID.
+	// Wrap the base handler so any log call made with a context that carries
+	// a session or turn automatically carries their IDs, on both branches.
 	baseHandler := slog.NewTextHandler(logOutput, &slog.HandlerOptions{Level: parseLogLevel(cfg.LogLevel)})
-	slog.SetDefault(slog.New(telemetry.NewOTelLogHandler(telemetry.NewLogHandler(baseHandler))))
+	slog.SetDefault(slog.New(telemetry.NewLogHandler(telemetry.NewOTelLogHandler(baseHandler))))
 
-	// Wires every telemetry.StartSession/StartStage span and metric this
+	// Wires every telemetry.StartTurn/StartStage span and metric this
 	// process produces to a real OTLP backend (see docker-compose.yml's
 	// otel-collector service). Nothing to do if unset — every telemetry.*
 	// call already degrades to a correctly-propagating no-op without it.

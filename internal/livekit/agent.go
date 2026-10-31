@@ -28,13 +28,11 @@ func Join(url, token string, deps *engine.Deps, liveCfg engine.LiveConfig) (*lks
 			return
 		}
 		identity := rp.Identity()
-		// The live call is a session: one correlation ID (and one root
-		// trace span) covers every utterance/turn logged for its whole
-		// lifetime, not just its start.
-		ctx, end := telemetry.StartSession(context.Background())
+		// One session ID covers everything logged for the call; each turn
+		// in it is its own trace.
+		ctx := telemetry.WithSessionID(context.Background(), rp.SID())
 		slog.InfoContext(ctx, "live call: starting", "identity", identity)
 		go func() {
-			defer end()
 			if err := startLiveCall(ctx, room, deps, liveCfg, identity, track); err != nil {
 				slog.InfoContext(ctx, "live call: ended", "identity", identity, "reason", err)
 			}

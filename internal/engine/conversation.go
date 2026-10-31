@@ -83,6 +83,8 @@ type Deps struct {
 
 // ReserveTurn fixes FIFO order at admission, before a transport starts a worker.
 // A canceled waiter still passes the baton only after its predecessor finishes.
+// The returned release is safe to call twice: a provider that accepts input
+// while busy releases at admission, and the holder's defer runs regardless.
 func (c *Conversation) ReserveTurn() func(context.Context) (func(), error) {
 	c.turnMu.Lock()
 	previous := c.tail
@@ -102,6 +104,14 @@ func (c *Conversation) ReserveTurn() func(context.Context) (func(), error) {
 			close(done)
 			return nil, err
 		}
-		return func() { close(done) }, nil
+		var once sync.Once
+		return func() { once.Do(func() { close(done) }) }, nil
 	}
+}
+
+// turnContext names the conversation for the provider and hands the turn on
+// as soon as the provider has accepted the input. A provider that never
+// signals admission keeps the turn strictly serial.
+func turnContext(ctx context.Context, identity string, release func()) context.Context {
+	return provider.WithAdmitted(provider.WithSession(ctx, identity), release)
 }

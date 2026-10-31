@@ -112,6 +112,11 @@ LiveKit room per conversation, sharing a single per-identity
   registered name. The LLM side needs even less: `internal/provider/openaicompat`
   works against any OpenAI-compatible endpoint, so swapping models is often
   just an `.env` change (`OPENAI_BASE_URL`/`OPENAI_API_KEY`/`OPENAI_MODEL`).
+  `internal/provider/agentpi` (`LLM_PROVIDER=agent_pi`) is different in kind:
+  a stateful agent server that owns the conversation. Its session and an
+  "admitted" callback travel on `ctx` (`provider/turn.go`), so a message can
+  reach it while the previous reply is still running, which
+  `AGENT_PI_WHEN_BUSY` decides what to do with. See `docs/AGENT-PI-PROVIDER.md`.
 - **Transport**: implement `engine.ReplySink` (text) and
   `engine.AudioSource`/`engine.AudioSink` (live audio) the way
   `internal/livekit` does, translate the transport's native messages into
@@ -161,35 +166,33 @@ every claim below has a number behind it.
   holds each chunk until the sink's backlog drops under `MaxLeadMS`. Both
   look like inefficiency and are not — see the comments on the function.
 
-### Correlation IDs, tracing, and metrics
+### Sessions, turns, tracing, and metrics
 
-`internal/telemetry` gives every client-initiated request or session (one
-text/voice message, or one live call) a correlation ID and threads it on
-`context.Context`, using OpenTelemetry's trace-ID type/propagation model
-rather than a bespoke scheme. `telemetry.StartSession(ctx)` is called once
-per request/session in `internal/livekit` (`text_mode.go`, `voice_mode.go`,
-`agent.go`'s `OnTrackSubscribed`) and opens a root `"session"` span; every
-context derived from the result — including `LiveCallController`'s per-turn
-contexts in `internal/engine/live_turn.go` — carries the same ID. Log with
-`slog.InfoContext`/`slog.ErrorContext` (not the plain `slog.Info`/`Error`)
-so it gets attached automatically: `cmd/agent/main.go` wraps the default
-handler in `telemetry.NewLogHandler`, which reads the ID off the context and
-adds it as a `correlation_id` attribute. See `docs/DESIGN.md` §7 for the
-full rationale.
+A **session** is one participant's connection (`session_id`, the LiveKit
+participant SID) and a **turn** is one input and its reply across every process
+(`turn_id`, which *is* the trace ID). `telemetry.WithSessionID` stamps the first
+and `telemetry.StartTurn` opens the second, continuing the sender's trace when
+it sends a `traceparent` — in `internal/livekit` for text and voice messages,
+and in `LiveCallController.bargeIn` for live turns, which begin at the speech,
+not the reply (`liveTurn`, `live_turn.go`). There is deliberately no span for a
+session: it would only be exported when the call ends. Every turn ends with a
+`turn.outcome`. Log with `slog.InfoContext`/`slog.ErrorContext` (not the plain
+`slog.Info`/`Error`) so the IDs attach automatically. See `docs/DESIGN.md` §7
+for the span tree and how a trace crosses the room and agent-pi.
 
 `telemetry.StartStage(ctx, name, attrs...)` starts a child span for one
-STT/LLM/TTS provider call or one live-call turn, timing it; the returned
+STT/LLM/TTS provider call or one live-call reply, timing it; the returned
 `end(err)` func closes the span (recording the error, if any) and records
 the stage's duration/outcome as OTel metrics in one call — see
 `engine/chat.go`, `engine/live_turn.go`, and `engine/voice.go` for the
-call sites. `stage="turn"` spans a whole live-call turn *including playback*,
+call sites. `stage="turn"` spans a live-call reply *including playback*,
 so its duration is how long the agent actually held the floor — the single
 most useful number when a call felt like being talked at rather than talked
-with. Both the trace ID scheme and these spans/metrics are no-ops
-until `telemetry.SetupOTel` is called (see `cmd/agent/main.go`, gated on
+with. The root `conversation.turn` span starts earlier, at the speech, and has
+`turn.first_audio_ms`, how long the caller waited. All of this is a no-op until
+`telemetry.SetupOTel` is called (see `cmd/agent/main.go`, gated on
 `OTEL_EXPORTER_OTLP_ENDPOINT`) — every call site works identically, and
-`CorrelationID` keeps returning the same ID either way, whether or not an
-OTLP endpoint is configured.
+`TurnID` and `Traceparent` keep returning real values either way.
 
 ### Observability
 
@@ -210,20 +213,23 @@ Grafana at http://localhost:3002 is pre-configured with all data sources:
 
 `tts.synthesize` spans additionally carry `tts.first_delta_ms` and
 `tts.total_ms` (set from `internal/provider/qwen/tts.go` onto the caller's
-span). The gap between the two is latency the batch-shaped
-`TTSProvider.Synthesize` throws away — nothing can be played until it
-returns — and the gap between `tts.total_ms` and the span's own duration is
-the per-call WebSocket dial and session setup. Measured on a real reply those
-were ~1.1s and ~1.0s on the *first* chunk, i.e. about two seconds of the
-caller's wait, which makes streaming synthesis and connection reuse the two
-obvious next levers on time-to-first-audio.
+span), and `tts.warm` says whether the call found a session already open.
+The gap between `tts.total_ms` and the span's own duration is WebSocket dial
+and session setup, ~850ms on a cold call. The live call streams audio
+(`provider.StreamingTTS`) and opens the first chunk's session alongside the
+LLM (`Warm`), which took first audio from about 2.2s after the call starts to
+about 0.55s; later chunks stay cold because earlier audio covers them. Without
+a trace, `live call:` log lines carry the same breakdown: `heard` (`stt_ms`,
+`captured_ms`), `llm first token`, `tts` and `first audio`. `speech discarded`
+records an utterance that produced no turn, and why.
 
-A trace ID printed in a log line's `correlation_id` / `trace_id` field is the exact
-trace ID for that request/session/call — paste it into Tempo or click the trace link
-in Grafana to see the STT/LLM/TTS timing breakdown for whatever went wrong or slow.
-The `t10.stage.calls`/`t10.stage.duration` metrics (Prometheus: `t10_stage_calls_total`,
-`t10_stage_duration_milliseconds_*`), tagged by `stage` and `error`, are what to graph
-for trends across many requests rather than one.
+A log line's `turn_id` is the exact trace ID of that turn — paste it into Tempo or
+click the trace link in Grafana to see the STT/LLM/TTS timing breakdown for whatever
+went wrong or slow. `{ span.session.id = "<session_id>" }` in TraceQL lists a whole
+call's turns. The `t10.stage.calls`/`t10.stage.duration` metrics (Prometheus:
+`t10_stage_calls_total`, `t10_stage_duration_milliseconds_*`), tagged by `stage` and
+`error`, and `t10.turn.outcomes` (`t10_turn_outcomes_total`), tagged by `mode` and
+`outcome`, are what to graph for trends across many requests rather than one.
 
 ### Provider registry configuration
 
@@ -231,7 +237,7 @@ Provider selection and all tunables are env vars loaded via
 `internal/config` (`.env` file first, then process env — real env vars are
 never overridden). See `.env.example` for the full list: LiveKit connection,
 `{STT,LLM,TTS}_PROVIDER` registry keys, DashScope/Qwen model+voice settings,
-OpenAI-compatible endpoint settings, VAD tuning
+OpenAI-compatible endpoint settings, agent-pi settings, VAD tuning
 (`VAD_ENERGY_THRESHOLD`/`VAD_MIN_SPEECH_MS`/`VAD_MIN_SILENCE_MS`/
 `VAD_BARGE_IN_MIN_SPEECH_MS`), and the live-call pipeline knobs
 (`LIVE_PREROLL_MS`, `LIVE_MAX_LEAD_MS`, `TTS_CONCURRENCY`, `TTS_TIMEOUT_MS`,

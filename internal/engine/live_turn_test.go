@@ -122,13 +122,13 @@ func TestLiveCallController_StreamsTranscriptAndReply(t *testing.T) {
 		mu          sync.Mutex
 		transcripts []string
 	)
-	ctrl.OnTranscript = func(_ uint64, transcript string) {
+	ctrl.OnTranscript = func(_ context.Context, _ uint64, transcript string) {
 		mu.Lock()
 		defer mu.Unlock()
 		transcripts = append(transcripts, transcript)
 	}
 	sink := &recordingSink{}
-	ctrl.NewReplySink = func() ReplySink { return sink }
+	ctrl.NewReplySink = func(context.Context) ReplySink { return sink }
 
 	source := newFakeSource(rate)
 	audioSink := newFakeSink(rate)
@@ -236,9 +236,9 @@ func TestLiveCallController_InterimTranscript(t *testing.T) {
 	ctrl := NewLiveCallController(context.Background(), deps, "bob", testLiveConfig())
 
 	interim := &recordingSink{}
-	ctrl.NewInterimSink = func(_ uint64) TranscriptSink { return interim }
+	ctrl.NewInterimSink = func(context.Context, uint64) TranscriptSink { return interim }
 	reply := &recordingSink{}
-	ctrl.NewReplySink = func() ReplySink { return reply }
+	ctrl.NewReplySink = func(context.Context) ReplySink { return reply }
 
 	source := newFakeSource(rate)
 	sink := newFakeSink(rate)
@@ -285,21 +285,21 @@ func TestLiveCallController_SilentUtteranceDoesNotStall(t *testing.T) {
 
 	var mu sync.Mutex
 	var transcripts []string
-	ctrl.OnTranscript = func(_ uint64, transcript string) {
+	ctrl.OnTranscript = func(_ context.Context, _ uint64, transcript string) {
 		mu.Lock()
 		defer mu.Unlock()
 		transcripts = append(transcripts, transcript)
 	}
 	var sinksMu sync.Mutex
 	var interimSinks, replySinks []*recordingSink
-	ctrl.NewInterimSink = func(_ uint64) TranscriptSink {
+	ctrl.NewInterimSink = func(context.Context, uint64) TranscriptSink {
 		s := &recordingSink{}
 		sinksMu.Lock()
 		interimSinks = append(interimSinks, s)
 		sinksMu.Unlock()
 		return s
 	}
-	ctrl.NewReplySink = func() ReplySink {
+	ctrl.NewReplySink = func(context.Context) ReplySink {
 		s := &recordingSink{}
 		sinksMu.Lock()
 		replySinks = append(replySinks, s)
@@ -372,7 +372,7 @@ func TestLiveCallController_WaitsOutAMidThoughtPause(t *testing.T) {
 	ctrl := NewLiveCallController(context.Background(), deps, "bob", testLiveConfig())
 
 	var replies atomic.Int32
-	ctrl.NewReplySink = func() ReplySink { replies.Add(1); return &recordingSink{} }
+	ctrl.NewReplySink = func(context.Context) ReplySink { replies.Add(1); return &recordingSink{} }
 
 	source := newFakeSource(rate)
 	sink := newFakeSink(rate)
@@ -447,7 +447,7 @@ func TestLiveCallController_CaptionsFollowThePlayback(t *testing.T) {
 	ctrl := NewLiveCallController(context.Background(), deps, "bob", testLiveConfig())
 
 	reply := &recordingSink{}
-	ctrl.NewReplySink = func() ReplySink { return reply }
+	ctrl.NewReplySink = func(context.Context) ReplySink { return reply }
 
 	source := newFakeSource(rate)
 	sink := newFakeSink(rate)
@@ -603,7 +603,7 @@ func TestLiveCallController_SynthesisFailureIsNeverCaptionedOrRemembered(t *test
 			ctrl := NewLiveCallController(context.Background(), deps, "bob", testLiveConfig())
 			defer ctrl.stopCall()
 			reply := &recordingSink{}
-			ctrl.NewReplySink = func() ReplySink { return reply }
+			ctrl.NewReplySink = func(context.Context) ReplySink { return reply }
 			ctrl.handleTurn([]string{"hello"}, newFakeSink(16000), 0)
 			if got := strings.TrimSpace(strings.Join(reply.Tokens(), "")); got != "Heard." {
 				t.Fatalf("caption = %q, want only successfully synthesized words", got)
@@ -715,7 +715,7 @@ func TestLiveCallController_SlowFirstChunkTimesOutWithoutReordering(t *testing.T
 	ctrl := NewLiveCallController(context.Background(), deps, "bob", cfg)
 	defer ctrl.stopCall()
 	reply := &recordingSink{}
-	ctrl.NewReplySink = func() ReplySink { return reply }
+	ctrl.NewReplySink = func(context.Context) ReplySink { return reply }
 	done := make(chan struct{})
 	go func() { ctrl.handleTurn([]string{"hello"}, newFakeSink(16000), 0); close(done) }()
 	select {

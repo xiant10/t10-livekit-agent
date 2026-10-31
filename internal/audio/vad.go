@@ -11,9 +11,16 @@ const (
 	EventSpeechEnd
 )
 
+// MaxSpeechGapMS is how long the signal may drop below the threshold without
+// restarting the MinSpeechMS count. Speech is not one unbroken burst: 1.2s of
+// "换个话题吧" holds a second of speech, but its longest unbroken stretch is
+// 400ms, and the 20-40ms dips between syllables must not start the count over.
+const MaxSpeechGapMS = 100
+
 // VAD is a small energy-threshold voice activity detector with debouncing:
-// speech must persist for MinSpeechMS before EventSpeechStart fires, and
-// silence must persist for MinSilenceMS before EventSpeechEnd fires. This is
+// speech must add up to MinSpeechMS, with no gap over MaxSpeechGapMS, before
+// EventSpeechStart fires, and silence must persist for MinSilenceMS before
+// EventSpeechEnd fires. This is
 // a deliberate simplification of the Python original's neural (Silero) VAD
 // — good enough to drive turn-taking in a demo, swappable later behind the
 // same Process method signature if a real model is wanted.
@@ -24,6 +31,7 @@ type VAD struct {
 
 	speaking  bool
 	speechMS  int
+	gapMS     int
 	silenceMS int
 }
 
@@ -51,6 +59,7 @@ func (v *VAD) Process(frame []int16, sampleRate int) Event {
 
 	if loud {
 		v.silenceMS = 0
+		v.gapMS = 0
 		v.speechMS += frameMS
 		if !v.speaking && v.speechMS >= v.MinSpeechMS {
 			v.speaking = true
@@ -59,7 +68,10 @@ func (v *VAD) Process(frame []int16, sampleRate int) Event {
 		return EventNone
 	}
 
-	v.speechMS = 0
+	v.gapMS += frameMS
+	if v.gapMS > MaxSpeechGapMS {
+		v.speechMS = 0
+	}
 	if v.speaking {
 		v.silenceMS += frameMS
 		if v.silenceMS >= v.MinSilenceMS {

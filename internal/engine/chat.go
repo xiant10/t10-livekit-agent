@@ -2,11 +2,13 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 
+	"t10-livekit-agent/internal/provider"
 	"t10-livekit-agent/internal/telemetry"
 )
 
@@ -23,7 +25,7 @@ func RunChatTurn(ctx context.Context, deps *Deps, identity, userText string, sin
 		return "", err
 	}
 	defer release()
-	return runChatTurn(ctx, deps, convo, userText, sink)
+	return runChatTurn(turnContext(ctx, identity, release), deps, convo, userText, sink)
 }
 
 func runChatTurn(ctx context.Context, deps *Deps, convo *Conversation, userText string, sink ReplySink) (string, error) {
@@ -35,6 +37,15 @@ func runChatTurn(ctx context.Context, deps *Deps, convo *Conversation, userText 
 		streamed.WriteString(delta)
 		sink.WriteToken(delta)
 	})
+	if errors.Is(err, provider.ErrSuperseded) {
+		// A newer message took over: this turn simply stops here.
+		end(nil)
+		telemetry.MarkOutcome(ctx, telemetry.OutcomeSuperseded)
+		if streamed.Len() > 0 {
+			convo.Append("assistant", streamed.String()+" [incomplete]")
+		}
+		return streamed.String(), nil
+	}
 	if err == nil {
 		err = ctx.Err()
 	}

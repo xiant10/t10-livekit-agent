@@ -3,7 +3,10 @@
 // downmixing, minimal WAV I/O, and a lightweight energy-based VAD.
 package audio
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"math"
+)
 
 // BytesToInt16 decodes little-endian PCM16 bytes into samples.
 func BytesToInt16(b []byte) []int16 {
@@ -78,6 +81,47 @@ func Resample(samples []int16, fromRate, toRate int) []int16 {
 		a, b := float64(samples[idx]), float64(samples[idx+1])
 		out[i] = int16(a + (b-a)*frac)
 	}
+	return out
+}
+
+// StreamResampler is Resample for audio that arrives in pieces. Resampling
+// each piece on its own would restart the interpolation at every boundary;
+// this carries the position and last sample across them, so the output is the
+// same however the input was split.
+type StreamResampler struct {
+	ratio float64
+	pos   float64 // next output position, relative to the next Push's first sample
+	last  int16   // the previous Push's final sample, position -1
+}
+
+// NewStreamResampler returns a resampler from fromRate to toRate.
+func NewStreamResampler(fromRate, toRate int) *StreamResampler {
+	return &StreamResampler{ratio: float64(fromRate) / float64(toRate)}
+}
+
+// Push resamples the next piece of audio.
+func (r *StreamResampler) Push(samples []int16) []int16 {
+	if r.ratio == 1 || len(samples) == 0 {
+		return samples
+	}
+	at := func(i int) float64 {
+		if i < 0 {
+			return float64(r.last)
+		}
+		return float64(samples[i])
+	}
+	out := make([]int16, 0, int(float64(len(samples))/r.ratio)+1)
+	for {
+		idx := int(math.Floor(r.pos))
+		if idx+1 >= len(samples) {
+			break
+		}
+		a, b := at(idx), at(idx+1)
+		out = append(out, int16(a+(b-a)*(r.pos-float64(idx))))
+		r.pos += r.ratio
+	}
+	r.pos -= float64(len(samples))
+	r.last = samples[len(samples)-1]
 	return out
 }
 

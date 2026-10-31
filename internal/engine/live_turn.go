@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -77,7 +78,7 @@ func (c LiveConfig) withDefaults() LiveConfig {
 	if c.PreRollMS == 0 {
 		c.PreRollMS = 400
 	}
-	c.PreRollMS = max(c.PreRollMS, c.VAD.MinSpeechMS, c.VAD.BargeInMinSpeechMS)
+	c.PreRollMS = max(c.PreRollMS, c.VAD.MinSpeechMS, c.VAD.BargeInMinSpeechMS+audio.MaxSpeechGapMS)
 	if c.MaxLeadMS == 0 {
 		c.MaxLeadMS = 700
 	}
@@ -123,7 +124,7 @@ const (
 // answer from an abandoned one. It's a bracketed note rather than an
 // ellipsis on purpose: an ellipsis reads as *style*, and the model picked it
 // up and started ending its own replies with one.
-const interruptedMarker = " [interrupted]"
+const interruptedMarker = provider.InterruptedMarker
 
 const (
 	sttSampleRate = 16000
@@ -132,6 +133,10 @@ const (
 	// sinkPollInterval is how often the wait loops below re-check how much
 	// audio the sink still has to play.
 	sinkPollInterval = 20 * time.Millisecond
+	// chunkAudioBuffer is how many pieces of one chunk's audio can wait for
+	// playback. It has to hold a whole chunk: a chunk behind one still playing
+	// sits here, and blocking its synthesis would spend its TTS timeout.
+	chunkAudioBuffer = 1024
 )
 
 // LiveCallController runs one participant's live call. Audio arrives from an
@@ -166,12 +171,11 @@ type LiveCallController struct {
 	identity string
 	cfg      LiveConfig
 
-	// callCtx carries the call's correlation ID (see telemetry.StartSession
-	// in internal/livekit) for the whole lifetime of the call, so every log
-	// line this controller emits carries the same ID. It is also the
-	// cancellation root for every stage: Run cancels it on the way out, and
-	// the commit/turn workers unwind rather than finishing work for a call
-	// whose audio track has already gone away.
+	// callCtx carries the call's session ID (see telemetry.WithSessionID in
+	// internal/livekit) for the whole lifetime of the call, and every turn
+	// descends from it. It is also the cancellation root for every stage: Run
+	// cancels it on the way out, and the commit/turn workers unwind rather
+	// than finishing work for a call whose audio track has already gone away.
 	callCtx  context.Context
 	stopCall context.CancelFunc
 
@@ -182,8 +186,8 @@ type LiveCallController struct {
 	// available — before, and independently of, whatever reply it leads to.
 	// Called even when the utterance turned out to carry no speech
 	// (transcript ""), so a client can clear whatever interim caption it was
-	// showing.
-	OnTranscript func(utteranceID uint64, transcript string)
+	// showing. ctx carries the turn, as it does for the other hooks below.
+	OnTranscript func(ctx context.Context, utteranceID uint64, transcript string)
 	// NewReplySink, if set, is called once per *turn* to obtain a sink for
 	// the reply's text. Note "per turn", not "per utterance": two utterances
 	// that arrive close enough together are answered by one turn (see
@@ -193,18 +197,18 @@ type LiveCallController struct {
 	// The text arrives chunk by chunk, paced to the audio actually going out
 	// of the AudioSink rather than to the LLM's generation speed — see
 	// playSpeech for why that matters.
-	NewReplySink func() ReplySink
+	NewReplySink func(ctx context.Context) ReplySink
 	// NewInterimSink, if set, is called once per utterance the moment speech
 	// starts (before STT has produced anything) to obtain a sink for the
 	// STT's best-guess-so-far text as replacement snapshots. Always
 	// closed exactly once, before OnTranscript fires with the authoritative
 	// (and possibly corrected) text for the same utterance.
-	NewInterimSink func(utteranceID uint64) TranscriptSink
+	NewInterimSink func(ctx context.Context, utteranceID uint64) TranscriptSink
 	// OnState, if set, is called with each CallState transition and speech version. It may be
 	// called from several goroutines over the life of a call, though never
 	// two at once. Callbacks must return promptly and must not reenter the
 	// controller; they serialize with floor changes.
-	OnState func(CallState, uint64)
+	OnState func(context.Context, CallState, uint64)
 
 	// turnVersion is bumped every time the caller starts talking. A turn
 	// captures it at the start and stops touching the sink (or the reply
@@ -230,6 +234,12 @@ type LiveCallController struct {
 
 	mu        sync.Mutex
 	curCancel context.CancelFunc
+	// turnStarted is when the current turn began thinking. Guarded by mu.
+	turnStarted time.Time
+	// pending is the turn the caller is speaking into, and current the one
+	// being answered. Guarded by mu, so a turn's boundary is decided by the same
+	// lock that decides barge-ins. See liveTurn.
+	pending, current *liveTurn
 
 	utterances chan finishedUtterance // Run → commit worker
 	turns      chan string            // commit worker → turn worker
@@ -243,22 +253,55 @@ type LiveCallController struct {
 // stopped receiving audio and is ready to be committed.
 type finishedUtterance struct {
 	id          uint64
+	turn        *liveTurn
+	ctx         context.Context // the utterance's span, under turn
+	end         func(error)
+	endedAt     time.Time
 	stream      provider.STTStream
 	interimSink TranscriptSink // from NewInterimSink at speech-start; nil if unset
+	capturedMS  int
+	partial     *atomic.Pointer[string]
+}
+
+// liveTurn is one turn of a live call, which starts earlier than the reply: the
+// speech that opens it is what the caller's wait is measured from, and
+// everything they say before the reply starts is part of it, however many
+// utterances that was. So the first speech with no turn pending opens one, the
+// reply claims it, and speech after that opens the next. Speech that yields no
+// words ends it there, as OutcomeNoSpeech.
+//
+// Fields are guarded by the controller's mu.
+type liveTurn struct {
+	*telemetry.Turn
+	heard       int // utterances that produced words
+	speechEnded time.Time
+	endPlayback func(error)
+}
+
+// latestSnapshot returns the last interim transcript stored in p, or "".
+func latestSnapshot(p *atomic.Pointer[string]) string {
+	if p == nil {
+		return ""
+	}
+	if s := p.Load(); s != nil {
+		return *s
+	}
+	return ""
 }
 
 // pendingChunk is one chunk of a reply queued for playback: the text that
-// will be captioned, and a channel carrying its audio once TTS returns.
+// will be captioned, and a channel carrying its audio as TTS produces it. The
+// channel closes when synthesis ends; a chunk that failed before any audio
+// closes it without sending.
 type pendingChunk struct {
 	text   string
 	result chan speechResult
 }
 
-// speechResult is one chunk's synthesized audio (already resampled to the
-// sink's rate), or the error that prevented it.
+// speechResult is one piece of a chunk's audio, already resampled to the
+// sink's rate.
 type speechResult struct {
 	samples []int16
-	err     error
 }
 
 func buildVAD(cfg LiveConfig) VADProcessor {
@@ -299,7 +342,13 @@ func (l *LiveCallController) Run(source AudioSource, sink AudioSink) error {
 		curStream      provider.STTStream
 		curInterim     TranscriptSink
 		curUtteranceID uint64
+		curSamples     int
+		curPartial     *atomic.Pointer[string]
+		curTurn        *liveTurn
+		curCtx         context.Context
+		curEnd         func(error)
 	)
+	capturedMS := func() int { return curSamples * 1000 / sttSampleRate }
 	pre := newPreRoll(l.cfg.PreRollMS, sttSampleRate)
 
 	turnsDone := make(chan struct{})
@@ -318,8 +367,14 @@ func (l *LiveCallController) Run(source AudioSource, sink AudioSink) error {
 
 	defer func() {
 		if curStream != nil {
+			// A partial tells these apart: words mean the caller was still
+			// talking, none mean noise was holding the VAD open.
+			slog.WarnContext(curCtx, "live call: speech discarded", "identity", l.identity,
+				"reason", "call ended before end of speech", "utterance_id", curUtteranceID,
+				"captured_ms", capturedMS(), "partial", latestSnapshot(curPartial))
 			curStream.Abort()
-			l.inFlight.Add(-1)
+			curEnd(nil)
+			l.settleUtterance(curTurn, telemetry.OutcomeCallEnded)
 		}
 		if curInterim != nil {
 			curInterim.Close()
@@ -332,6 +387,14 @@ func (l *LiveCallController) Run(source AudioSource, sink AudioSink) error {
 		close(l.utterances)
 		<-commitsDone
 		<-turnsDone
+
+		// Words that never got a reply: the caller hung up before it started.
+		l.mu.Lock()
+		if l.pending != nil {
+			l.pending.End(telemetry.OutcomeCallEnded, nil)
+			l.pending = nil
+		}
+		l.mu.Unlock()
 	}()
 
 	for {
@@ -346,9 +409,9 @@ func (l *LiveCallController) Run(source AudioSource, sink AudioSink) error {
 		}
 
 		// Interrupting audible speech is held to the stricter debounce; a
-		// fresh turn to the responsive one. The detector resets its speech
-		// counter on every silent frame, so swapping this between frames
-		// only affects the next onset, never one already in progress.
+		// fresh turn to the responsive one. Swapping this between frames
+		// only moves the bar for an onset still being counted; speech that
+		// has already started is unaffected.
 		if l.speaking.Load() {
 			l.vad.SetMinSpeechMS(l.cfg.VAD.BargeInMinSpeechMS)
 		} else {
@@ -363,44 +426,53 @@ func (l *LiveCallController) Run(source AudioSource, sink AudioSink) error {
 			// turn that starts a moment later would inherit a version the
 			// interruption already invalidated.
 			l.inFlight.Add(1) // Claim the floor before callbacks or STT setup.
-			l.bargeIn(sink)
+			curTurn = l.bargeIn(sink)
 			curUtteranceID = l.turnVersion.Load()
+			curCtx, curEnd = telemetry.StartStage(curTurn.Context(), "utterance", attribute.Int64("utterance_id", int64(curUtteranceID)))
 			l.setState(StateListening)
 
 			var interim TranscriptSink
 			if l.NewInterimSink != nil {
-				interim = l.NewInterimSink(curUtteranceID)
+				interim = l.NewInterimSink(curCtx, curUtteranceID)
 			}
+			partial := new(atomic.Pointer[string])
 			stream, err := l.deps.STT.NewStream(l.callCtx, "", func(delta string) {
+				partial.Store(&delta)
 				if interim != nil {
 					interim.WriteSnapshot(delta)
 				}
 			})
 			if err != nil {
-				slog.ErrorContext(l.callCtx, "live call: failed to open STT stream", "err", err)
+				slog.ErrorContext(curCtx, "live call: failed to open STT stream", "err", err)
 				if interim != nil {
 					interim.Close()
 				}
-				l.inFlight.Add(-1)
+				curEnd(err)
+				l.settleUtterance(curTurn, telemetry.OutcomeFailed)
 				pre.reset()
 				continue
 			}
+			curSamples = 0
 			if lead := pre.take(); len(lead) > 0 {
 				stream.PushPCM(audio.Int16ToBytes(lead))
+				curSamples = len(lead)
 			}
 			curStream = stream
 			curInterim = interim
+			curPartial = partial
 
 		case audio.EventSpeechEnd:
 			if curStream != nil {
-				l.utterances <- finishedUtterance{id: curUtteranceID, stream: curStream, interimSink: curInterim}
+				l.utterances <- finishedUtterance{id: curUtteranceID, turn: curTurn, ctx: curCtx, end: curEnd, endedAt: time.Now(), stream: curStream, interimSink: curInterim, capturedMS: capturedMS(), partial: curPartial}
 				curStream = nil
 				curInterim = nil
+				curPartial = nil
 			}
 		}
 
 		if curStream != nil {
 			curStream.PushPCM(audio.Int16ToBytes(samples16k))
+			curSamples += len(samples16k)
 		} else {
 			pre.add(samples16k)
 		}
@@ -415,14 +487,18 @@ func (l *LiveCallController) commitUtterance(u finishedUtterance) {
 	// Released only once the transcript has been handed on (or discarded),
 	// so a turn waiting on waitForQuiet can't start in the gap between this
 	// utterance ending and its words being available to answer.
-	defer l.inFlight.Add(-1)
+	outcome := telemetry.OutcomeNoSpeech
+	defer func() { l.settleUtterance(u.turn, outcome) }()
 
-	ctx, cancel := context.WithTimeout(l.callCtx, sttCommitTimeout)
+	ctx, cancel := context.WithTimeout(u.ctx, sttCommitTimeout)
 	defer cancel()
 
+	sttStarted := time.Now()
 	sttCtx, sttEnd := telemetry.StartStage(ctx, "stt.commit")
 	transcript, err := u.stream.Commit(sttCtx)
 	sttEnd(err)
+	u.end(err)
+	sttMS := time.Since(sttStarted).Milliseconds()
 
 	// The interim caption is done regardless of how Commit turned out — from
 	// here on OnTranscript carries this utterance's authoritative (possibly
@@ -430,24 +506,49 @@ func (l *LiveCallController) commitUtterance(u finishedUtterance) {
 	if u.interimSink != nil {
 		u.interimSink.Close()
 	}
+	reason := "empty transcript"
 	if err != nil {
 		slog.ErrorContext(ctx, "live call: stt commit failed", "identity", l.identity, "err", err)
 		transcript = ""
+		reason = "stt commit failed"
+		outcome = telemetry.OutcomeFailed
 	}
 	transcript = strings.TrimSpace(transcript)
 
 	if l.OnTranscript != nil {
-		l.OnTranscript(u.id, transcript)
+		l.OnTranscript(ctx, u.id, transcript)
 	}
 	if transcript == "" {
-		return // a false VAD trigger on background noise; nothing to answer
+		// Usually a false VAD trigger on background noise, with nothing to
+		// answer, but a failed commit loses real words the same way.
+		slog.WarnContext(ctx, "live call: speech discarded", "identity", l.identity, "reason", reason,
+			"utterance_id", u.id, "captured_ms", u.capturedMS, "stt_ms", sttMS, "partial", latestSnapshot(u.partial))
+		return
 	}
-	slog.InfoContext(ctx, "live call: heard", "identity", l.identity, "text", transcript)
+	slog.InfoContext(ctx, "live call: heard", "identity", l.identity, "utterance_id", u.id, "text", transcript, "captured_ms", u.capturedMS, "stt_ms", sttMS)
+
+	l.mu.Lock()
+	u.turn.heard++
+	u.turn.speechEnded = u.endedAt
+	l.mu.Unlock()
 
 	select {
 	case l.turns <- transcript:
 	case <-l.callCtx.Done():
 	}
+}
+
+// settleUtterance releases the utterance's hold on the floor. If it was the
+// last one and the pending turn got no words out of any of them, no reply is
+// coming and the turn ends here.
+func (l *LiveCallController) settleUtterance(turn *liveTurn, outcome string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.inFlight.Add(-1) > 0 || l.pending != turn || turn.heard > 0 {
+		return
+	}
+	l.pending = nil
+	turn.End(outcome, nil)
 }
 
 // runTurns answers transcripts one turn at a time, coalescing any that
@@ -528,8 +629,9 @@ func (l *LiveCallController) coalesce(batch []string) []string {
 }
 
 // bargeIn invalidates the in-flight reply (if any), cancels whatever LLM/TTS
-// call it is blocked on, and drops audio queued but not yet played.
-func (l *LiveCallController) bargeIn(sink AudioSink) {
+// call it is blocked on, and drops audio queued but not yet played. It returns
+// the turn this speech belongs to.
+func (l *LiveCallController) bargeIn(sink AudioSink) *liveTurn {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	interrupting := l.speaking.Load() || l.working.Load()
@@ -548,6 +650,34 @@ func (l *LiveCallController) bargeIn(sink AudioSink) {
 	if interrupting {
 		l.setStateLocked(StateInterrupted)
 	}
+	if l.pending == nil {
+		var follows *telemetry.Turn
+		if interrupting && l.current != nil {
+			follows = l.current.Turn
+		}
+		l.pending = l.newTurn(follows)
+	}
+	return l.pending
+}
+
+func (l *LiveCallController) newTurn(follows *telemetry.Turn) *liveTurn {
+	return &liveTurn{Turn: telemetry.StartTurn(l.callCtx, telemetry.TurnOptions{
+		Mode:    "live",
+		Follows: follows,
+		Attrs:   []attribute.KeyValue{attribute.String("identity", l.identity)},
+	})}
+}
+
+// turnCtx is the context of the turn the floor is about right now, which is
+// the one being spoken into, if any, ahead of one still unwinding. Callers hold mu.
+func (l *LiveCallController) turnCtx() context.Context {
+	switch {
+	case l.pending != nil:
+		return l.pending.Context()
+	case l.current != nil:
+		return l.current.Context()
+	}
+	return l.callCtx
 }
 
 func (l *LiveCallController) setState(s CallState) {
@@ -557,29 +687,44 @@ func (l *LiveCallController) setState(s CallState) {
 }
 
 func (l *LiveCallController) setStateLocked(s CallState) {
-	slog.InfoContext(l.callCtx, "live call: state", "identity", l.identity, "state", s, "turn_version", l.turnVersion.Load(), "in_flight", l.inFlight.Load())
+	ctx := l.turnCtx()
+	slog.InfoContext(ctx, "live call: state", "identity", l.identity, "state", s, "turn_version", l.turnVersion.Load(), "in_flight", l.inFlight.Load())
 	if l.OnState != nil {
-		l.OnState(s, l.turnVersion.Load())
+		l.OnState(ctx, s, l.turnVersion.Load())
 	}
 }
 
 func (l *LiveCallController) handleTurn(transcripts []string, sink AudioSink, version uint64) bool {
-	ctx, cancel := context.WithCancel(l.callCtx)
+	l.mu.Lock()
+	if l.pending == nil {
+		l.pending = l.newTurn(nil)
+	}
+	ctx, cancel := context.WithCancel(l.pending.Context())
 	defer cancel()
 
 	superseded := func() bool { return ctx.Err() != nil || l.turnVersion.Load() != version }
 
 	// Recheck after quiet/coalescing; a failed admission leaves the batch
-	// with runTurns so even a continuation that transcribes empty loses no words.
-	l.mu.Lock()
+	// with runTurns so even a continuation that transcribes empty loses no
+	// words, and the turn pending, for that speech to join.
 	if superseded() || l.inFlight.Load() > 0 {
 		l.mu.Unlock()
 		return false
 	}
+	turn := l.pending
+	l.pending = nil
+	l.current = turn
 	l.curCancel = cancel
+	l.turnStarted = time.Now()
 	l.working.Store(true)
 	l.setStateLocked(StateThinking)
 	l.mu.Unlock()
+
+	// Opening a provider session costs about as long as the model takes to
+	// reach its first chunk, so run the two side by side.
+	if tts, ok := l.deps.TTS.(provider.StreamingTTS); ok {
+		tts.Warm(l.deps.Voice)
+	}
 
 	convo := l.deps.Conversations.Get(l.identity)
 	for _, t := range transcripts {
@@ -594,7 +739,7 @@ func (l *LiveCallController) handleTurn(transcripts []string, sink AudioSink, ve
 
 	var replySink ReplySink
 	if l.NewReplySink != nil {
-		replySink = l.NewReplySink()
+		replySink = l.NewReplySink(ctx)
 	}
 
 	// Chunks are dispatched in order, with backpressure when every TTS slot
@@ -608,6 +753,7 @@ func (l *LiveCallController) handleTurn(transcripts []string, sink AudioSink, ve
 	var spoken strings.Builder
 	go l.playSpeech(ctx, version, speechQueue, sink, replySink, &spoken, playerDone)
 
+	var replyErr error
 	defer func() {
 		// Stop feeding the player, let it hand off whatever was already
 		// synthesized, then wait for the speaker to actually catch up.
@@ -620,6 +766,12 @@ func (l *LiveCallController) handleTurn(transcripts []string, sink AudioSink, ve
 		<-playerDone
 		waitSinkBelow(ctx, sink, 0)
 		l.speaking.Store(false)
+		l.mu.Lock()
+		endPlayback := turn.endPlayback
+		l.mu.Unlock()
+		if endPlayback != nil {
+			endPlayback(nil)
+		}
 
 		l.recordTurnResult(convo, spoken.String(), superseded())
 
@@ -637,10 +789,20 @@ func (l *LiveCallController) handleTurn(transcripts []string, sink AudioSink, ve
 		if !superseded() {
 			l.setStateLocked(StateIdle)
 		}
+		l.current = nil
 		l.mu.Unlock()
+
+		switch {
+		case l.callCtx.Err() != nil:
+			turn.End(telemetry.OutcomeCallEnded, nil)
+		case superseded():
+			turn.End(telemetry.OutcomeInterrupted, nil)
+		default:
+			turn.End(telemetry.OutcomeCompleted, replyErr)
+		}
 	}()
 
-	_ = l.streamAndSynthesize(ctx, convo, sinkRate, l.ttsSem, speechQueue, superseded)
+	replyErr = l.streamAndSynthesize(ctx, convo, sinkRate, l.ttsSem, speechQueue, superseded)
 	return true
 }
 
@@ -675,6 +837,7 @@ func (l *LiveCallController) streamAndSynthesize(
 		if superseded() {
 			return
 		}
+		text = speechText(text)
 		if !hasSpeakableContent(text) {
 			return
 		}
@@ -683,7 +846,7 @@ func (l *LiveCallController) streamAndSynthesize(
 		case <-ctx.Done():
 			return
 		}
-		chunk := pendingChunk{text: text, result: make(chan speechResult, 1)}
+		chunk := pendingChunk{text: text, result: make(chan speechResult, chunkAudioBuffer)}
 		select {
 		case speechQueue <- chunk:
 		case <-ctx.Done():
@@ -693,12 +856,21 @@ func (l *LiveCallController) streamAndSynthesize(
 		go l.synthesizeChunk(ctx, text, sinkRate, chunk.result)
 	}
 
+	llmStarted := time.Now()
+	var firstToken sync.Once
 	llmCtx, llmEnd := telemetry.StartStage(ctx, "llm.chat_stream")
-	_, err := l.deps.LLM.ChatStream(llmCtx, convo.Snapshot(), func(delta string) {
+	_, err := l.deps.LLM.ChatStream(provider.WithSession(llmCtx, l.identity), convo.Snapshot(), func(delta string) {
+		firstToken.Do(func() {
+			slog.InfoContext(ctx, "live call: llm first token", "identity", l.identity, "ms", time.Since(llmStarted).Milliseconds())
+		})
 		for _, chunk := range chunker.push(delta) {
 			queue(chunk)
 		}
 	})
+	if errors.Is(err, provider.ErrSuperseded) {
+		err = nil // a typed message took over; finish what was already said
+		telemetry.MarkOutcome(ctx, telemetry.OutcomeSuperseded)
+	}
 	if err != nil && superseded() {
 		llmEnd(nil)
 	} else {
@@ -730,33 +902,55 @@ func (l *LiveCallController) streamAndSynthesize(
 // can feel — competing with almost nothing.
 func (l *LiveCallController) synthesizeChunk(ctx context.Context, text string, sinkRate int, resultCh chan<- speechResult) {
 	defer func() { <-l.ttsSem }()
+	defer close(resultCh)
 
 	// Re-checked after the wait: a barge-in may well have landed while this
 	// chunk was parked on the semaphore.
 	if ctx.Err() != nil {
-		resultCh <- speechResult{err: ctx.Err()}
 		return
 	}
 
 	callCtx, cancelCall := context.WithTimeout(ctx, l.cfg.TTSTimeout)
 	defer cancelCall()
+	started := time.Now()
+	var firstAudio time.Duration
+	var resampler *audio.StreamResampler
+	deliver := func(pcm []byte, sampleRate int) {
+		if resampler == nil {
+			firstAudio = time.Since(started)
+			resampler = audio.NewStreamResampler(sampleRate, sinkRate)
+		}
+		select {
+		case resultCh <- speechResult{samples: resampler.Push(audio.BytesToInt16(pcm))}:
+		case <-ctx.Done():
+		}
+	}
+
 	ttsCtx, ttsEnd := telemetry.StartStage(callCtx, "tts.synthesize", attribute.Int("text.chars", len([]rune(text))))
-	pcm, sampleRate, err := l.deps.TTS.Synthesize(ttsCtx, text, l.deps.Voice)
+	var err error
+	if tts, ok := l.deps.TTS.(provider.StreamingTTS); ok {
+		err = tts.SynthesizeStream(ttsCtx, text, l.deps.Voice, deliver)
+	} else {
+		var pcm []byte
+		var sampleRate int
+		pcm, sampleRate, err = l.deps.TTS.Synthesize(ttsCtx, text, l.deps.Voice)
+		if err == nil && len(pcm) > 0 {
+			deliver(pcm, sampleRate)
+		}
+	}
 	if err != nil && ctx.Err() != nil {
 		ttsEnd(nil) // cancelled by a barge-in; not a real error
 	} else {
 		ttsEnd(err)
 	}
-	if err != nil || len(pcm) == 0 {
-		if err != nil && ctx.Err() == nil {
+	if err != nil {
+		if ctx.Err() == nil {
 			slog.ErrorContext(ctx, "live call: tts failed", "identity", l.identity, "chars", len([]rune(text)), "err", err)
 		}
-		resultCh <- speechResult{err: err}
 		return
 	}
-
-	samples := audio.ResampleIf(audio.BytesToInt16(pcm), sampleRate, sinkRate)
-	resultCh <- speechResult{samples: samples}
+	slog.InfoContext(ctx, "live call: tts", "identity", l.identity, "chars", len([]rune(text)),
+		"first_audio_ms", firstAudio.Milliseconds(), "total_ms", time.Since(started).Milliseconds())
 }
 
 // playSpeech drains speechQueue in submission order — the order chunks were
@@ -785,41 +979,76 @@ func (l *LiveCallController) playSpeech(ctx context.Context, version uint64, que
 	maxLead := time.Duration(l.cfg.MaxLeadMS) * time.Millisecond
 	var started bool
 	for chunk := range queue {
+		l.playChunk(ctx, version, chunk, sink, replySink, spoken, maxLead, &started)
+		if ctx.Err() != nil {
+			return
+		}
+	}
+}
+
+// playChunk plays one chunk's audio as it arrives. The chunk's text is released
+// with its first audio: no audio, no text, since unspoken text must never
+// become a caption or memory. Each piece rechecks the floor, so an interruption
+// takes effect in the middle of a chunk still being synthesized.
+func (l *LiveCallController) playChunk(ctx context.Context, version uint64, chunk pendingChunk, sink AudioSink, replySink ReplySink, spoken *strings.Builder, maxLead time.Duration, started *bool) {
+	stale := func() bool { return ctx.Err() != nil || l.turnVersion.Load() != version }
+	released := false
+	samples := 0
+	defer func() {
+		if released {
+			slog.InfoContext(ctx, "live call: spoken", "identity", l.identity, "turn_version", version, "text", chunk.text, "audio_ms", samples*1000/sink.SampleRate())
+		}
+	}()
+
+	for {
 		var res speechResult
+		var ok bool
 		select {
-		case res = <-chunk.result:
+		case res, ok = <-chunk.result:
 		case <-ctx.Done():
 			return
 		}
-		if res.err != nil || len(res.samples) == 0 {
-			continue // Unspoken text must never become a caption or memory.
+		if !ok {
+			return
 		}
-		if ctx.Err() != nil || l.turnVersion.Load() != version {
+		if len(res.samples) == 0 {
 			continue
 		}
-		waitSinkBelow(ctx, sink, maxLead)
-		if ctx.Err() != nil || l.turnVersion.Load() != version {
-			continue
+		if !released {
+			if stale() {
+				return
+			}
+			waitSinkBelow(ctx, sink, maxLead)
 		}
 
 		// Admission and enqueue are serialized with interruption + Drain.
 		// Otherwise a stale PushPCM can refill the sink just after a drain.
 		l.mu.Lock()
-		if ctx.Err() != nil || l.turnVersion.Load() != version || l.inFlight.Load() > 0 {
+		if stale() || l.inFlight.Load() > 0 {
 			l.mu.Unlock()
-			continue
+			return
 		}
-		if !started {
-			started = true
+		if !*started {
+			*started = true
 			l.speaking.Store(true)
 			l.setStateLocked(StateSpeaking)
+			slog.InfoContext(ctx, "live call: first audio", "identity", l.identity, "turn_version", version, "since_thinking_ms", time.Since(l.turnStarted).Milliseconds())
+			if turn := l.current; turn != nil {
+				_, turn.endPlayback = telemetry.StartStage(ctx, "playback")
+				if !turn.speechEnded.IsZero() {
+					turn.SetAttributes(attribute.Int64("turn.first_audio_ms", time.Since(turn.speechEnded).Milliseconds()))
+				}
+			}
 		}
 		sink.PushPCM(res.samples)
-		if replySink != nil {
-			replySink.WriteToken(chunk.text)
+		samples += len(res.samples)
+		if !released {
+			released = true
+			if replySink != nil {
+				replySink.WriteToken(chunk.text)
+			}
+			spoken.WriteString(chunk.text)
 		}
-		spoken.WriteString(chunk.text)
-		slog.InfoContext(ctx, "live call: spoken", "identity", l.identity, "turn_version", version, "text", chunk.text, "audio_ms", len(res.samples)*1000/sink.SampleRate())
 		l.mu.Unlock()
 	}
 }

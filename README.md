@@ -18,7 +18,7 @@ A high-performance, real-time voice agent built in Go on top of [LiveKit](https:
 - **Barge-in / Interruption Support**:
   - Rapid cancellation of in-flight LLM/TTS generation and instant playback drain when caller speech is detected.
 - **Built-in Observability**:
-  - OpenTelemetry tracing and metrics with correlation IDs propagated across all modalities and turns.
+  - OpenTelemetry tracing and metrics with session and turn IDs propagated across all modalities and turns.
   - Pre-configured Grafana LGTM (Loki, Grafana, Tempo, Mimir) stack via Docker Compose.
 
 ---
@@ -161,7 +161,7 @@ t10-agent/
 │   ├── provider/          # STT, LLM, and TTS provider registry & backends
 │   ├── roomauth/          # LiveKit token generation
 │   ├── roomprotocol/      # Shared topic and attribute definitions
-│   └── telemetry/         # OpenTelemetry tracing, metrics, and correlation IDs
+│   └── telemetry/         # OpenTelemetry tracing, metrics, and session/turn IDs
 ├── docker-compose.yml     # Local orchestration for LiveKit, Agent, and LGTM
 ├── Dockerfile             # Multi-stage production container build
 └── go.mod

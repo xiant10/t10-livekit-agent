@@ -1,25 +1,29 @@
-// Package telemetry stamps every client-initiated unit of work — an
-// incoming text/voice message, or a live call — with a correlation ID and
-// carries it on a context.Context, so any log line emitted anywhere while
-// handling that request or session can be tied back together. The same
-// context also carries real OpenTelemetry spans once SetupOTel has been
-// called, so the same IDs that tie log lines together also tie together a
-// trace/metrics view of where time actually went.
+// Package telemetry gives the agent's work two IDs and carries them on a
+// context.Context, so log lines and spans from anywhere in the process can be
+// tied back together:
 //
-// The correlation ID is an OpenTelemetry trace ID (go.opentelemetry.io/otel/trace):
-// StartSession fabricates one and stamps it as a *remote* span context, the
-// same way an incoming W3C traceparent header would. StartStage and
-// StartSession's own root span then start real child spans off of it via
-// the ordinary global otel.Tracer/otel.Meter — which are no-ops until
-// SetupOTel installs a real SDK TracerProvider/MeterProvider, so every call
-// site works identically (and CorrelationID keeps returning the same ID)
-// whether or not an OTLP endpoint is configured.
+//   - A session is one participant's connection to the room. WithSessionID
+//     stamps its ID (the LiveKit participant SID, which both ends already
+//     know) and every span and log line below it carries it. A session has no
+//     span of its own: a span that lives as long as a call would only be
+//     exported when the call ends.
+//   - A turn is one input and the reply to it, across every process that
+//     touches it. It is one trace, and its ID is that trace's ID, so a turn_id
+//     in a log line can be pasted straight into Tempo. StartTurn opens it,
+//     continuing the caller's trace when it arrives with a W3C traceparent.
+//
+// StartStage then starts real child spans via the ordinary global
+// otel.Tracer/otel.Meter, which are no-ops until SetupOTel installs a real
+// SDK TracerProvider/MeterProvider. StartTurn mints a trace ID itself in that
+// case, so every call site works identically, and TurnID and Traceparent keep
+// returning real values, whether or not an OTLP endpoint is configured.
 package telemetry
 
 import (
 	"context"
 	"crypto/rand"
 	"log/slog"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
@@ -27,11 +31,27 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
 
 // instrumentationName scopes every span/metric this package produces.
 const instrumentationName = "t10-livekit-agent"
+
+// How a turn ended, on its root span as turn.outcome and tagging
+// t10.turn.outcomes. Bounded on purpose: it is a metric label.
+const (
+	OutcomeCompleted   = "completed"
+	OutcomeInterrupted = "interrupted" // the caller barged in
+	OutcomeSuperseded  = "superseded"  // a newer message took over
+	OutcomeFailed      = "failed"
+	OutcomeNoSpeech    = "no_speech" // VAD fired but no words came of it
+	OutcomeCallEnded   = "call_ended"
+)
+
+// traceContext is explicit rather than the otel global so propagation works
+// whether or not SetupOTel ran.
+var traceContext = propagation.TraceContext{}
 
 // tracer and meter are the global otel.Tracer/otel.Meter handles: the
 // go.opentelemetry.io/otel global package returns proxies that transparently
@@ -49,6 +69,8 @@ var (
 		"Duration of one STT/LLM/TTS provider call, or one live-call turn.", "ms")
 	stageCalls = mustInt64Counter(meter, "t10.stage.calls",
 		"Count of completed stage calls, tagged by stage name and whether it errored.")
+	turnOutcomes = mustInt64Counter(meter, "t10.turn.outcomes",
+		"Count of finished turns, tagged by mode and how they ended.")
 )
 
 func mustFloat64Histogram(m metric.Meter, name, desc, unit string) metric.Float64Histogram {
@@ -67,41 +89,138 @@ func mustInt64Counter(m metric.Meter, name, desc string) metric.Int64Counter {
 	return c
 }
 
-// StartSession stamps ctx with a fresh correlation ID and opens the root
-// "session" span for it. Call it once per client-initiated request or
-// session — when a text or voice message comes in, or when a live call
-// starts — before any work begins for it. Every context derived from the
-// returned one (context.WithCancel, context.WithTimeout, ...) carries the
-// same ID, and so does every slog "*Context" call and every StartStage span
-// made with it or a descendant. Call the returned func (typically via
-// defer) once the request/session is fully done, to close the root span.
-//
-// The "session" span's parent is a fabricated remote span ID (see
-// newSpanID below) rather than an actual received span, so a trace backend
-// may flag it with a harmless "invalid parent span" / "skipping clock skew
-// adjustment" warning — that's an accurate description of what's going on
-// (there's genuinely no real parent), not a bug.
-func StartSession(ctx context.Context) (context.Context, func()) {
-	sc := trace.NewSpanContext(trace.SpanContextConfig{
-		TraceID:    newTraceID(),
-		SpanID:     newSpanID(),
-		TraceFlags: trace.FlagsSampled,
-		Remote:     true,
-	})
-	ctx = trace.ContextWithRemoteSpanContext(ctx, sc)
-	ctx, span := tracer.Start(ctx, "session")
-	return ctx, func() { span.End() }
+type (
+	sessionKey struct{}
+	turnKey    struct{}
+)
+
+// WithSessionID stamps ctx with the session it belongs to.
+func WithSessionID(ctx context.Context, id string) context.Context {
+	if id == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, sessionKey{}, id)
 }
 
-// StartStage starts a child span for one stage of work within a session —
-// an STT/LLM/TTS provider call, or one live-call turn — and starts timing
-// it. Call the returned end func exactly once, with the error the stage
+// SessionID returns the ID WithSessionID stamped on ctx, or "".
+func SessionID(ctx context.Context) string {
+	id, _ := ctx.Value(sessionKey{}).(string)
+	return id
+}
+
+func sessionAttr(ctx context.Context) []attribute.KeyValue {
+	if id := SessionID(ctx); id != "" {
+		return []attribute.KeyValue{attribute.String("session.id", id)}
+	}
+	return nil
+}
+
+// TurnOptions configures StartTurn.
+type TurnOptions struct {
+	// Mode is how the input arrived: text, voice or live.
+	Mode string
+	// Traceparent continues a trace the sender started. Empty or malformed
+	// starts a new one, so a client that sends none still gets traced.
+	Traceparent string
+	// Follows is the turn this one cut off, if any.
+	Follows *Turn
+	Attrs   []attribute.KeyValue
+}
+
+// Turn is one input and the reply to it: the root span of one trace here.
+type Turn struct {
+	ctx  context.Context
+	span trace.Span
+	mode string
+
+	mu      sync.Mutex
+	outcome string
+	ended   bool
+}
+
+// StartTurn opens a turn under ctx, which supplies its cancellation and
+// session. Call End exactly when the turn is over, however it went.
+func StartTurn(ctx context.Context, opts TurnOptions) *Turn {
+	spanOpts := []trace.SpanStartOption{trace.WithAttributes(attribute.String("turn.mode", opts.Mode))}
+	spanOpts = append(spanOpts, trace.WithAttributes(sessionAttr(ctx)...), trace.WithAttributes(opts.Attrs...))
+	if opts.Follows != nil {
+		spanOpts = append(spanOpts, trace.WithLinks(trace.Link{SpanContext: opts.Follows.span.SpanContext()}))
+	}
+	ctx, span := startRoot(ctx, "conversation.turn", opts.Traceparent, spanOpts...)
+	t := &Turn{span: span, mode: opts.Mode}
+	t.ctx = context.WithValue(ctx, turnKey{}, t)
+	return t
+}
+
+// startRoot opens the first span this process has for a trace: a child of
+// traceparent if there is a valid one, otherwise a true root. Without an SDK
+// the root has no IDs, so one is minted to keep TurnID and Traceparent working.
+func startRoot(ctx context.Context, name, traceparent string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
+	if remote := ContextWithTraceparent(ctx, traceparent); trace.SpanContextFromContext(remote).IsValid() {
+		return tracer.Start(remote, name, opts...)
+	}
+	ctx, span := tracer.Start(ctx, name, append(opts, trace.WithNewRoot())...)
+	if !span.SpanContext().IsValid() {
+		ctx = trace.ContextWithSpanContext(ctx, trace.NewSpanContext(trace.SpanContextConfig{
+			TraceID:    newTraceID(),
+			SpanID:     newSpanID(),
+			TraceFlags: trace.FlagsSampled,
+		}))
+	}
+	return ctx, span
+}
+
+// Context carries the turn's trace, and descends from the ctx given to StartTurn.
+func (t *Turn) Context() context.Context { return t.ctx }
+
+// SetAttributes records attrs on the turn's root span.
+func (t *Turn) SetAttributes(attrs ...attribute.KeyValue) { t.span.SetAttributes(attrs...) }
+
+// End closes the turn. An outcome MarkOutcome recorded wins over the one given
+// here; failing that, a non-nil err makes it OutcomeFailed. Only the first
+// call counts.
+func (t *Turn) End(outcome string, err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.ended {
+		return
+	}
+	t.ended = true
+	if err != nil {
+		t.span.RecordError(err)
+		t.span.SetStatus(codes.Error, err.Error())
+		outcome = OutcomeFailed
+	}
+	if t.outcome != "" {
+		outcome = t.outcome
+	}
+	t.span.SetAttributes(attribute.String("turn.outcome", outcome))
+	t.span.End()
+	turnOutcomes.Add(t.ctx, 1, metric.WithAttributes(attribute.String("mode", t.mode), attribute.String("outcome", outcome)))
+}
+
+// MarkOutcome records how the turn on ctx ended, for code that knows why but
+// does not own the turn. The first mark stands.
+func MarkOutcome(ctx context.Context, outcome string) {
+	t, _ := ctx.Value(turnKey{}).(*Turn)
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.outcome == "" {
+		t.outcome = outcome
+	}
+}
+
+// StartStage starts a child span for one stage of work within a turn — an
+// STT/LLM/TTS provider call, or a live turn's reply — and starts timing it. Call the returned end func exactly once, with the error the stage
 // finished with (nil on success): it records the error on the span (if
 // any), closes it, and records the stage's duration and outcome as OTel
 // metrics tagged by name, so a single call site drives both traces and
 // metrics.
 func StartStage(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, func(err error)) {
-	ctx, span := tracer.Start(ctx, name, trace.WithAttributes(attrs...))
+	ctx, span := tracer.Start(ctx, name, trace.WithAttributes(attrs...), trace.WithAttributes(sessionAttr(ctx)...))
 	start := time.Now()
 	return ctx, func(err error) {
 		if err != nil {
@@ -119,14 +238,27 @@ func StartStage(ctx context.Context, name string, attrs ...attribute.KeyValue) (
 	}
 }
 
-// CorrelationID returns the correlation ID StartSession stamped on ctx (or
-// one of its ancestors), or "" if StartSession was never called for it.
-func CorrelationID(ctx context.Context) string {
+// TurnID returns the ID of the turn on ctx, which is its trace ID, or "" outside
+// a turn.
+func TurnID(ctx context.Context) string {
 	sc := trace.SpanContextFromContext(ctx)
 	if !sc.HasTraceID() {
 		return ""
 	}
 	return sc.TraceID().String()
+}
+
+// Traceparent renders the span on ctx as a W3C traceparent, or "" outside a turn.
+func Traceparent(ctx context.Context) string {
+	carrier := propagation.MapCarrier{}
+	traceContext.Inject(ctx, carrier)
+	return carrier.Get("traceparent")
+}
+
+// ContextWithTraceparent makes traceparent the remote parent of spans started
+// under the result. ctx is returned unchanged if traceparent is empty or malformed.
+func ContextWithTraceparent(ctx context.Context, traceparent string) context.Context {
+	return traceContext.Extract(ctx, propagation.MapCarrier{"traceparent": traceparent})
 }
 
 func newTraceID() (id trace.TraceID) {
@@ -140,11 +272,11 @@ func newSpanID() (id trace.SpanID) {
 }
 
 // NewLogHandler wraps next so that any record logged through a context
-// StartSession stamped gets a "correlation_id" attribute attached
-// automatically. This is what gets the ID into "logs along the way"
-// without every log call site needing to know about it — they just need to
-// use the *Context slog variants (InfoContext, ErrorContext, ...) with a
-// context descended from StartSession.
+// carrying a session or a turn gets session_id and turn_id attributes
+// automatically. This is what gets the IDs into "logs along the way" without
+// every log call site needing to know about them — they just need to use the
+// *Context slog variants (InfoContext, ErrorContext, ...). Put it outside
+// NewOTelLogHandler, so the OTel branch sees the attributes too.
 func NewLogHandler(next slog.Handler) slog.Handler {
 	return &logHandler{next: next}
 }
@@ -156,8 +288,11 @@ func (h *logHandler) Enabled(ctx context.Context, level slog.Level) bool {
 }
 
 func (h *logHandler) Handle(ctx context.Context, r slog.Record) error {
-	if id := CorrelationID(ctx); id != "" {
-		r.AddAttrs(slog.String("correlation_id", id))
+	if id := SessionID(ctx); id != "" {
+		r.AddAttrs(slog.String("session_id", id))
+	}
+	if id := TurnID(ctx); id != "" {
+		r.AddAttrs(slog.String("turn_id", id))
 	}
 	return h.next.Handle(ctx, r)
 }

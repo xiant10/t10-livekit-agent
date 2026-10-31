@@ -9,6 +9,7 @@ import (
 	lksdk "github.com/livekit/server-sdk-go/v2"
 
 	"t10-livekit-agent/internal/engine"
+	"t10-livekit-agent/internal/provider"
 	"t10-livekit-agent/internal/roomprotocol"
 	"t10-livekit-agent/internal/telemetry"
 )
@@ -45,7 +46,7 @@ func (s *messageReplySink) Close()                 { s.w.Close() }
 func newChatReplySink(ctx context.Context, room *lksdk.Room, identity, requestID string) engine.ReplySink {
 	return &messageReplySink{ctx: ctx, w: room.LocalParticipant.StreamText(lksdk.StreamTextOptions{
 		Topic: roomprotocol.TopicChat, DestinationIdentities: []string{identity},
-		Attributes: map[string]string{roomprotocol.AttrRequestID: requestID},
+		Attributes: turnAttributes(ctx, map[string]string{roomprotocol.AttrRequestID: requestID}),
 	})}
 }
 
@@ -54,15 +55,17 @@ func newChatReplySink(ctx context.Context, room *lksdk.Room, identity, requestID
 func newTextStreamHandler(room *lksdk.Room, deps *engine.Deps, queue *engine.Manager) lksdk.TextStreamHandler {
 	return func(reader *lksdk.TextStreamReader, identity string) {
 		enter := queue.Get(identity).ReserveTurn()
-		ctx, end := telemetry.StartSession(context.Background())
-		ctx, cancel := context.WithTimeout(ctx, 50*time.Second)
+		turn := startMessageTurn(room, identity, "text", reader.Info.Attributes, reader.Info.Id)
+		ctx, cancel := context.WithTimeout(turn.Context(), 50*time.Second)
 		status := newMessageStatus(ctx, room, identity, requestID(reader.Info.Attributes, reader.Info.Id))
 		status.send("queued", "", 0)
 		go func() {
-			defer end()
+			var err error
+			defer func() { turn.End(telemetry.OutcomeCompleted, err) }()
 			defer cancel()
 			defer status.w.Close()
-			release, err := enter(ctx)
+			var release func()
+			release, err = enter(ctx)
 			if err == nil {
 				defer release()
 				status.send("thinking", "", 0)
@@ -73,6 +76,7 @@ func newTextStreamHandler(room *lksdk.Room, deps *engine.Deps, queue *engine.Man
 				} else if strings.TrimSpace(text) == "" {
 					err = fmt.Errorf("empty text message")
 				} else {
+					ctx := provider.WithAdmitted(ctx, release)
 					_, err = engine.RunChatTurn(ctx, deps, identity, text, newChatReplySink(ctx, room, identity, status.id))
 				}
 			}

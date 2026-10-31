@@ -145,8 +145,8 @@ func (s *trackAudioSink) runWriter(ctx context.Context, silence []byte) {
 // startLiveCall publishes the agent's outgoing audio track, wires up the
 // AudioSource/AudioSink adapters, and runs the engine's live-call turn loop
 // until remote's track ends. It blocks, so callers invoke it in its own
-// goroutine. sessionCtx carries the call's correlation ID (see
-// telemetry.StartSession); every context derived from it below, and hence
+// goroutine. sessionCtx carries the call's session ID (see
+// telemetry.WithSessionID); every context derived from it below, and hence
 // every log line the engine emits while running this call, carries it too.
 func startLiveCall(sessionCtx context.Context, room *lksdk.Room, deps *engine.Deps, liveCfg engine.LiveConfig, identity string, remote *webrtc.TrackRemote) error {
 	decoder, err := opuscodec.NewDecoder()
@@ -204,14 +204,14 @@ func startLiveCall(sessionCtx context.Context, room *lksdk.Room, deps *engine.De
 	// turns; roomprotocol.TopicState adds the live-call-only bits (who's talking, and
 	// when a reply was cut off) that the other modes have no equivalent of.
 	var eventOrder atomic.Int64
-	options := func(topic string, utteranceID uint64) lksdk.StreamTextOptions {
-		return lksdk.StreamTextOptions{Topic: topic, DestinationIdentities: []string{identity}, Attributes: map[string]string{
+	options := func(ctx context.Context, topic string, utteranceID uint64) lksdk.StreamTextOptions {
+		return lksdk.StreamTextOptions{Topic: topic, DestinationIdentities: []string{identity}, Attributes: turnAttributes(ctx, map[string]string{
 			roomprotocol.AttrEventOrder:  strconv.FormatInt(eventOrder.Add(1), 10),
 			roomprotocol.AttrUtteranceID: strconv.FormatUint(utteranceID, 10),
-		}}
+		})}
 	}
-	ctrl.OnTranscript = func(utteranceID uint64, transcript string) {
-		room.LocalParticipant.SendText(transcript, options(roomprotocol.TopicTranscript, utteranceID))
+	ctrl.OnTranscript = func(ctx context.Context, utteranceID uint64, transcript string) {
+		room.LocalParticipant.SendText(transcript, options(ctx, roomprotocol.TopicTranscript, utteranceID))
 		lkOpts := lksdk.StreamTextOptions{
 			Topic:                 roomprotocol.TopicLKTranscription,
 			DestinationIdentities: []string{identity},
@@ -225,17 +225,17 @@ func startLiveCall(sessionCtx context.Context, room *lksdk.Room, deps *engine.De
 		}
 		room.LocalParticipant.SendText(transcript, lkOpts)
 	}
-	ctrl.NewReplySink = func() engine.ReplySink {
-		return textReplySink{w: room.LocalParticipant.StreamText(options(roomprotocol.TopicChat, 0))}
+	ctrl.NewReplySink = func(ctx context.Context) engine.ReplySink {
+		return textReplySink{w: room.LocalParticipant.StreamText(options(ctx, roomprotocol.TopicChat, 0))}
 	}
-	ctrl.NewInterimSink = func(utteranceID uint64) engine.TranscriptSink {
-		opts := options(roomprotocol.TopicTranscriptInterim, utteranceID)
+	ctrl.NewInterimSink = func(ctx context.Context, utteranceID uint64) engine.TranscriptSink {
+		opts := options(ctx, roomprotocol.TopicTranscriptInterim, utteranceID)
 		opts.Attributes[roomprotocol.AttrFormat] = roomprotocol.FormatSnapshotJSONL
 		w := room.LocalParticipant.StreamText(opts)
 		return interimReplySink{w: w}
 	}
-	ctrl.OnState = func(state engine.CallState, utteranceID uint64) {
-		room.LocalParticipant.SendText(string(state), options(roomprotocol.TopicState, utteranceID))
+	ctrl.OnState = func(ctx context.Context, state engine.CallState, utteranceID uint64) {
+		room.LocalParticipant.SendText(string(state), options(ctx, roomprotocol.TopicState, utteranceID))
 		room.LocalParticipant.SetAttributes(map[string]string{
 			roomprotocol.AttrLKAgentState: string(state),
 		})

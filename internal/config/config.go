@@ -69,6 +69,7 @@ type Config struct {
 	// agent-pi LLM. AgentPiWhenBusy is what a message does when the agent is
 	// already working: "auto", "interrupt", "steer" or "followUp".
 	AgentPiURL      string
+	AgentURLs       string
 	AgentPiProfile  string
 	AgentPiWhenBusy string
 
@@ -77,6 +78,10 @@ type Config struct {
 	AuthURL          string
 	AuthClientID     string
 	AuthClientSecret string
+
+	RedisURL          string
+	VoiceMaxCalls     int
+	VoiceDrainSeconds int
 
 	// Live-call VAD tuning. VADBargeInMinSpeechMS is the speech-start
 	// debounce used while the agent is already speaking — longer than
@@ -154,12 +159,17 @@ func Load() Config {
 		OpenAIModel:   getenv("OPENAI_MODEL", "qwen-plus"),
 
 		AgentPiURL:      getenv("AGENT_PI_URL", "http://localhost:9800/agent"),
+		AgentURLs:       getenv("AGENT_URLS", ""),
 		AgentPiProfile:  getenv("AGENT_PI_PROFILE", "voice"),
 		AgentPiWhenBusy: getenv("AGENT_PI_WHEN_BUSY", "auto"),
 
 		AuthURL:          getenv("AUTH_URL", "http://localhost:8081"),
 		AuthClientID:     getenv("AUTH_CLIENT_ID", "t10-livekit-agent"),
 		AuthClientSecret: getenv("AUTH_CLIENT_SECRET", ""),
+
+		RedisURL:          getenv("REDIS_URL", ""),
+		VoiceMaxCalls:     getenvInt("VOICE_MAX_CALLS", 0),
+		VoiceDrainSeconds: getenvInt("VOICE_DRAIN_SECONDS", 600),
 
 		VADEnergyThreshold:    getenvFloat("VAD_ENERGY_THRESHOLD", 500.0),
 		VADMinSpeechMS:        getenvInt("VAD_MIN_SPEECH_MS", 200),

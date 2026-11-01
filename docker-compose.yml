@@ -37,6 +37,8 @@ services:
     image: t10-agent:latest
     container_name: t10-livekit-agent
     restart: unless-stopped
+    # Longer than VOICE_DRAIN_SECONDS, so a stop lets calls finish.
+    stop_grace_period: 11m
     env_file:
       - .env
     environment:
@@ -62,6 +64,17 @@ services:
         condition: service_healthy
       otel-lgtm:
         condition: service_started
+    networks:
+      - t10-net
+
+  # Gives each room to one worker. One worker doesn't need it: to run more, use
+  # `docker compose --profile scale up`, set REDIS_URL=redis://redis:6379 in
+  # .env, and drop container_name above, which can only name one.
+  redis:
+    image: redis:7-alpine
+    container_name: t10-redis
+    profiles: [scale]
+    restart: unless-stopped
     networks:
       - t10-net
 

@@ -914,3 +914,33 @@ func TestRoomsKeepTheirOwnPlace(t *testing.T) {
 		t.Fatalf("sessions held = %d, want 2", got)
 	}
 }
+
+func TestUrlForRoutesASessionToItsReplica(t *testing.T) {
+	replicas, err := parseReplicas("assistant.r0=http://a:9800, assistant.r1=http://b:9800/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := New(Options{URL: "http://default/agent", Replicas: replicas, Tokens: fixedToken("token"), WhenBusy: WhenBusyAuto})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]string{
+		"assistant.r1.7": "http://b:9800/agent",
+		"assistant.r0.7": "http://a:9800/agent",
+		"assistant.r9.7": "http://default/agent",
+		"":               "http://default/agent",
+	}
+	for session, want := range cases {
+		if got := l.urlFor(session); got != want {
+			t.Errorf("urlFor(%q) = %q, want %q", session, got, want)
+		}
+	}
+}
+
+func TestParseReplicasRefusesBadEntries(t *testing.T) {
+	for _, raw := range []string{"assistant", "=http://a", "assistant.r0=not-a-url"} {
+		if _, err := parseReplicas(raw); err == nil {
+			t.Errorf("parseReplicas(%q) accepted", raw)
+		}
+	}
+}

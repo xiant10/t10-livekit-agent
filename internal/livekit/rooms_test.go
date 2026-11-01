@@ -32,7 +32,8 @@ type fakeRooms struct {
 func newFakeRooms() (*fakeRooms, *roomServer) {
 	f := &fakeRooms{stays: map[string]*fakeStay{}, joins: map[string]int{}, alone: map[string]bool{}}
 	return f, &roomServer{
-		rooms: map[string]*visit{},
+		rooms:  map[string]*visit{},
+		claims: soloClaims{},
 		list: func(context.Context) ([]*lkproto.Room, error) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
@@ -249,7 +250,7 @@ func TestAJoinFinishingAfterShutdownLeaves(t *testing.T) {
 	for f.joined("a") == 0 {
 		time.Sleep(time.Millisecond)
 	}
-	s.leaveAll()
+	s.leaveAll(context.Background())
 	close(f.wait)
 	deadline := time.Now().Add(time.Second)
 	for {
@@ -272,7 +273,7 @@ func TestShutdownLeavesEveryRoom(t *testing.T) {
 	s.reconcile(context.Background(), time.Now())
 	settled(t, s, "a")
 	settled(t, s, "b")
-	s.leaveAll()
+	s.leaveAll(context.Background())
 	if !f.stays["a"].left.Load() || !f.stays["b"].left.Load() {
 		t.Fatal("still in a room after shutting down")
 	}

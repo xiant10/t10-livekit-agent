@@ -1,0 +1,62 @@
+# Voice workers. Redis gives each room to one worker, so these scale freely, up
+# to the LiveKit server's capacity. VOICE_MAX_CALLS stays 0, no limit, until a
+# load test sets one.
+#
+# A stop lets calls finish: terminationGracePeriodSeconds must exceed
+# VOICE_DRAIN_SECONDS.
+#
+# AGENT_URLS needs an entry per agent-pi replica. The secret holds REDIS_URL,
+# LIVEKIT_API_KEY, LIVEKIT_API_SECRET, AUTH_CLIENT_SECRET and DASHSCOPE_API_KEY.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: t10-livekit-agent
+  namespace: t10
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: t10-livekit-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: t10-livekit-agent
+        # Lets these pods through auth-server's network policy.
+        t10.dev/auth-client: "true"
+    spec:
+      terminationGracePeriodSeconds: 660
+      securityContext:
+        runAsNonRoot: true
+        # The image sets no user.
+        runAsUser: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: t10-livekit-agent
+          image: t10-agent:latest
+          imagePullPolicy: IfNotPresent
+          # Logs go to stdout. The default file can't be written here.
+          args: [-log-file=]
+          env:
+            - name: LIVEKIT_URL
+              value: ws://livekit.t10.svc.cluster.local:7880
+            - name: LLM_PROVIDER
+              value: agent_pi
+            - name: AGENT_PI_URL
+              value: http://agent-pi-0.agent-pi.t10.svc.cluster.local:9800/agent
+            - name: AGENT_URLS
+              value: assistant.agent-pi-0=http://agent-pi-0.agent-pi.t10.svc.cluster.local:9800
+            - name: AUTH_URL
+              value: http://auth-server.t10.svc.cluster.local:8081
+            - name: VOICE_DRAIN_SECONDS
+              value: "600"
+            - name: VOICE_MAX_CALLS
+              value: "0"
+          envFrom:
+            - secretRef:
+                name: t10-livekit-agent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]

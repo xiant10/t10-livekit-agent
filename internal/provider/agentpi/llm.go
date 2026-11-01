@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,7 +39,11 @@ func init() {
 		if err != nil {
 			return nil, err
 		}
-		return New(Options{URL: cfg.AgentPiURL, Tokens: tokens, Profile: cfg.AgentPiProfile, WhenBusy: cfg.AgentPiWhenBusy})
+		replicas, err := parseReplicas(cfg.AgentURLs)
+		if err != nil {
+			return nil, err
+		}
+		return New(Options{URL: cfg.AgentPiURL, Replicas: replicas, Tokens: tokens, Profile: cfg.AgentPiProfile, WhenBusy: cfg.AgentPiWhenBusy})
 	})
 }
 
@@ -78,7 +83,9 @@ type TokenSource interface {
 
 // Options configures New. The timeouts default when zero.
 type Options struct {
-	URL      string
+	URL string
+	// Replicas maps a session ID's prefix to its replica's URL. URL takes the rest.
+	Replicas map[string]string
 	Tokens   TokenSource
 	Profile  string
 	WhenBusy string
@@ -329,6 +336,40 @@ func (l *LLM) openSession(ctx context.Context, s *session) error {
 	return nil
 }
 
+// urlFor picks the replica a session lives on. A session ID is
+// <agent>.<replica>.<n>, and a session stays on its replica for life, so
+// everything before the last dot names it. A new session goes to URL.
+func (l *LLM) urlFor(sessionID string) string {
+	if at := strings.LastIndex(sessionID, "."); at > 0 {
+		if url, ok := l.opts.Replicas[sessionID[:at]]; ok {
+			return url
+		}
+	}
+	return l.opts.URL
+}
+
+// parseReplicas reads AGENT_URLS: name=url pairs, as in workbench, where a name
+// is a session ID's prefix and a url is the replica's base.
+func parseReplicas(raw string) (map[string]string, error) {
+	replicas := map[string]string{}
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		name, base, ok := strings.Cut(pair, "=")
+		if !ok || name == "" {
+			return nil, fmt.Errorf("agentpi: AGENT_URLS: %q isn't name=url", pair)
+		}
+		target, err := url.JoinPath(base, "agent")
+		if err != nil || !strings.Contains(base, "://") {
+			return nil, fmt.Errorf("agentpi: AGENT_URLS: %q has no valid url", pair)
+		}
+		replicas[name] = target
+	}
+	return replicas, nil
+}
+
 // submit POSTs input and returns once it is admitted. It retries a failed
 // connection once with the same requestId: durable deduplicates on it, and a
 // retried interrupt does not abort a second time.
@@ -357,7 +398,7 @@ func (l *LLM) submit(ctx context.Context, s *session, input, note string) (*http
 	var resp *http.Response
 	for attempt := 0; attempt < 2; attempt++ {
 		var req *http.Request
-		req, err = http.NewRequestWithContext(context.WithoutCancel(ctx), http.MethodPost, l.opts.URL, bytes.NewReader(body))
+		req, err = http.NewRequestWithContext(context.WithoutCancel(ctx), http.MethodPost, l.urlFor(s.id), bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("agentpi: build %s: %w", method, err)
 		}

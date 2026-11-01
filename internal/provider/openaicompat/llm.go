@@ -18,6 +18,7 @@ import (
 
 	"t10-livekit-agent/internal/config"
 	"t10-livekit-agent/internal/provider"
+	"t10-livekit-agent/internal/telemetry"
 )
 
 func init() {
@@ -84,6 +85,7 @@ func (l *LLM) ChatStream(ctx context.Context, msgs []provider.Message, onToken f
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+l.apiKey)
 	req.Header.Set("Accept", "text/event-stream")
+	setIdentity(ctx, req)
 
 	resp, err := l.client.Do(req)
 	if err != nil {
@@ -133,6 +135,27 @@ func (l *LLM) ChatStream(ctx context.Context, msgs []provider.Message, onToken f
 				return full.String(), nil
 			}
 			return full.String(), fmt.Errorf("openaicompat: stream read: %w", err)
+		}
+	}
+}
+
+// setIdentity sends the headers ai-gateway-llm audits and counts by. A provider
+// ignores them. The tenant is the room's admission prefix, and a room without
+// one, such as a test room, counts against this service.
+func setIdentity(ctx context.Context, req *http.Request) {
+	room, identity, _ := strings.Cut(provider.SessionNameFrom(ctx), "/")
+	headers := map[string]string{
+		"X-Session-ID": telemetry.SessionID(ctx),
+		"X-Turn-ID":    telemetry.TurnID(ctx),
+		"X-User-Id":    identity,
+		"traceparent":  telemetry.Traceparent(ctx),
+	}
+	if tenant, _, ok := strings.Cut(room, "__"); ok {
+		headers["X-Tenant-ID"] = tenant
+	}
+	for name, value := range headers {
+		if value != "" {
+			req.Header.Set(name, value)
 		}
 	}
 }

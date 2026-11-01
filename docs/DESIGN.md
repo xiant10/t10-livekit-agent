@@ -515,9 +515,9 @@ docker compose logs -f agent | grep <session_id printed for that run>
 
 The agent container's `LIVEKIT_URL` is overridden to `ws://livekit-server:7880`
 (the compose network's internal address, on the t10-net network) — the
-`.env` value (`ws://localhost:8880`) is what host-run processes like
+`.env` value (`ws://localhost:8890`) is what host-run processes like
 `cmd/testclient` use. LiveKit's ports are published on the host as
-8880/8881/8882 (→ container 7880/7881/7882) rather than the conventional
+8890/8891/8892 (→ container 7880/7881/7882) rather than the conventional
 7880-7882, so this stack doesn't collide with another LiveKit dev server
 already running on the same machine.
 

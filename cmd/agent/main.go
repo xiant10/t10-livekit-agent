@@ -1,5 +1,5 @@
-// Command agent is the voice agent process: it joins every LiveKit room with
-// someone in it and serves text, voice-message, and live-call mode to them.
+// Command agent is the voice agent process: it joins each LiveKit room with
+// someone in it that it can claim, and serves text, voice-message, and live-call mode to them.
 package main
 
 import (
@@ -128,8 +128,15 @@ func main() {
 	slog.Info("agent serving rooms", "identity", *identity, "livekit_url", cfg.LiveKitURL,
 		"stt", cfg.STTProvider, "llm", cfg.LLMProvider, "tts", cfg.TTSProvider, "model", cfg.OpenAIModel)
 
+	claims, err := livekit.NewClaims(cfg.RedisURL)
+	if err != nil {
+		fatal("claims", err)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// The first signal starts the drain. A second one ends the process.
+	context.AfterFunc(ctx, stop)
 	livekit.Serve(ctx, livekit.ServeOptions{
 		URL:          cfg.LiveKitURL,
 		APIKey:       cfg.LiveKitAPIKey,
@@ -138,6 +145,9 @@ func main() {
 		SystemPrompt: *systemPrompt,
 		Deps:         deps,
 		Live:         liveCfg,
+		Claims:       claims,
+		MaxCalls:     cfg.VoiceMaxCalls,
+		Drain:        time.Duration(cfg.VoiceDrainSeconds) * time.Second,
 	})
 	slog.InfoContext(ctx, "shut down")
 }

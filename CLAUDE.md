@@ -62,7 +62,7 @@ LiveKit server via Compose and the agent on the host:
 
 ```bash
 docker compose up livekit-server
-go run ./cmd/agent   # separate terminal; joins every room with someone in it
+go run ./cmd/agent   # separate terminal; joins each room with someone in it
 ```
 
 ## Architecture
@@ -102,6 +102,17 @@ Primary runtime dependency direction:
 All three conversation modes (text, voice-message, live call) run over one
 LiveKit room per conversation, sharing a single per-identity
 `engine.Conversation` so context carries across modalities.
+
+### Rooms, claims and draining
+
+`internal/livekit/rooms.go` polls LiveKit and keeps the worker in each room it can
+claim that has a caller. With `REDIS_URL` set, a claim is a Redis lease
+(`claims.go`), so each room gets one worker. Without it, the single process claims
+everything. All workers share one identity, so two in one room would evict each
+other, and the claim is what stops that. A worker at `VOICE_MAX_CALLS` stops
+claiming, and a busier one waits slightly longer. On `SIGTERM` it stops claiming
+and lets calls run for up to `VOICE_DRAIN_SECONDS`. A second signal ends it at
+once. Redis being down stops new claims, and never ends a call under way.
 
 ### Three extensibility axes
 

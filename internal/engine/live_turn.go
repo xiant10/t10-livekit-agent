@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"go.opentelemetry.io/otel/attribute"
 
@@ -859,7 +860,7 @@ func (l *LiveCallController) streamAndSynthesize(
 	llmStarted := time.Now()
 	var firstToken sync.Once
 	llmCtx, llmEnd := telemetry.StartStage(ctx, "llm.chat_stream")
-	_, err := l.deps.LLM.ChatStream(provider.WithSession(llmCtx, l.identity), convo.Snapshot(), func(delta string) {
+	_, err := l.deps.LLM.ChatStream(provider.WithLiveCall(provider.WithSession(llmCtx, l.identity)), convo.Snapshot(), func(delta string) {
 		firstToken.Do(func() {
 			slog.InfoContext(ctx, "live call: llm first token", "identity", l.identity, "ms", time.Since(llmStarted).Milliseconds())
 		})
@@ -879,6 +880,11 @@ func (l *LiveCallController) streamAndSynthesize(
 	if err != nil {
 		if !superseded() {
 			slog.ErrorContext(ctx, "live call: llm failed", "identity", l.identity, "err", err)
+			if ctx.Err() == nil {
+				// Silence is the failure mode: say so, whatever was said before it.
+				queue(chunker.flush())
+				queue(failureSpeech(convo))
+			}
 		}
 		return err
 	}
@@ -886,6 +892,24 @@ func (l *LiveCallController) streamAndSynthesize(
 		queue(rest)
 	}
 	return nil
+}
+
+// failureSpeech is the reason a caller hears when no answer is coming, in the
+// language they last spoke. Provider details stay in the log.
+func failureSpeech(convo *Conversation) string {
+	history := convo.Snapshot()
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role != "user" {
+			continue
+		}
+		for _, r := range history[i].Content {
+			if unicode.Is(unicode.Han, r) {
+				return "抱歉，我现在无法回答，请稍后再试。"
+			}
+		}
+		break
+	}
+	return "Sorry, I can't answer that right now. Please try again."
 }
 
 // synthesizeChunk runs one chunk's TTS call in its own goroutine so it can

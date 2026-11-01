@@ -54,9 +54,15 @@ placed one per boundary, and each gets its own answer.
 
 ## Measured behaviour
 
-The steps below come from the real agent-pi harness, at the versions in its
-lockfile (pi-durable 1.0.2), with a scripted model. The claims about ordering
-in this document rest on these runs, not on the docs.
+The steps below come from the real agent-pi harness with a scripted model. They
+were measured on pi-durable 1.0.2 and rerun on 1.4.0 side by side: event order,
+handover points, final answers, and model context were the same in every scenario.
+The claims about ordering in this document rest on these runs, not on the docs.
+Scripted first-token latency did not change either, over two rounds of 60 turns on
+each version: p50 104 to 106 ms for a prompt, 158 to 160 ms for an interrupt.
+
+The real-model measurements in this document (the table below and the `send_email`
+runs under "Why the default is `auto`") are from 1.0.2 and have not been repeated.
 
 **Real model, second message during a long answer.** Time from sending the second
 message to its first token, on `qwen-plus`, one run each:
@@ -97,7 +103,7 @@ before the tool survives, because that message did not stop with `aborted`:
 
 ```
 [user "one"], [assistant "Let me check." + tool call],
-[toolResult "Tool crm_slow was aborted"], [user "two"]
+[toolResult "<harness>\n[error] Tool crm_slow was aborted\n</harness>"], [user "two"]
 ```
 
 **Interrupt on an idle session.** Behaves exactly like a prompt.
@@ -152,7 +158,9 @@ A   RESULT, EOF
 
 `session.cancel` followed by a new `session.prompt` with a fresh `requestId`
 recovers it. B's stream ends with `unanswered/aborted`, and the new submission
-is answered normally. Tested.
+is answered normally. Tested. Since 1.4.0 durable has `settings.afterFailedRun` to
+continue or withdraw such inputs, but agent-pi does not set it, so the default
+`keep` applies.
 
 **A client disconnects.** The run continues, and queued steers are unaffected.
 
@@ -206,9 +214,18 @@ blank-imported from `cmd/agent/main.go`.
 |---|---|---|
 | `LLM_PROVIDER` | `openai_compat` | Set to `agent_pi` to enable |
 | `AGENT_PI_URL` | `http://localhost:9800/agent` | Endpoint |
-| `AGENT_PI_TOKEN` | | Bearer token, one service identity |
 | `AGENT_PI_PROFILE` | `voice` | Profile for new sessions |
 | `AGENT_PI_WHEN_BUSY` | `auto` | `auto`, `interrupt`, `steer`, or `followUp` |
+| `AUTH_URL` | `http://localhost:8081` | Auth service |
+| `AUTH_CLIENT_ID` | `t10-livekit-agent` | This agent's service account |
+| `AUTH_CLIENT_SECRET` | | Its secret, required |
+
+Each caller reaches agent-pi as themselves. Room admission puts an agent grant in
+the participant's `t10.grant` attribute, and `internal/authclient` exchanges it
+for a 5-minute token before each request, caching it until a minute before it
+expires. Each mint rechecks the user at the auth service, so a removed user's call
+stops within one token's lifetime. A participant with no grant gets no reply, and
+the turn fails with a clear error. agent-pi needs `AUTH_KIND=jwt`.
 
 `AGENT_PI_WHEN_BUSY` applies to live calls and to text and voice messages alike.
 An unknown value fails at startup.
@@ -306,7 +323,7 @@ required, not optional.
 The provider prefixes the next input with what was actually delivered:
 
 ```
-[Your previous reply was cut off. The caller heard at most: "杭州是浙江省省会，以西湖美景". Do not mention this.]
+Your previous reply was cut off. The caller heard at most: "杭州是浙江省省会，以西湖美景". Do not mention this.
 等一下，我想问的是上海。
 ```
 
@@ -494,6 +511,13 @@ What `auto` still costs:
   already closed, so the model is not told how much of it arrived.
 - **Stale Go history.** `Conversation` keeps growing and only feeds the cursor and
   the interrupted-text correction. Its contents are never sent.
+- **Crash loops.** A task cut off 5 times in a row without progress is parked, and
+  its session stays busy. The next `session.interrupt`, the provider's default for
+  every message, abandons it and answers the new input, so that run's work is lost.
+  In `steer` and `followUp` a new message queues behind it, and only the `errStuck`
+  recovery's `session.cancel` clears it. The provider never calls `session.retry`.
+- **Storage failure.** agent-pi exits so its supervisor can restart it, which ends
+  every open stream. Unfinished runs resume in the new process.
 - **System prompt.** `-system-prompt` has no effect with this provider. Edit
   `apps/assistant/prompts/voice.md` instead.
 

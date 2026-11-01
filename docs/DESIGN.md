@@ -526,7 +526,7 @@ just the LiveKit server via Compose and the agent on the host:
 
 ```bash
 docker compose up livekit-server
-go run ./cmd/agent -room demo   # separate terminal; needs libopus (below)
+go run ./cmd/agent   # separate terminal; needs libopus (below)
 ```
 
 Building the agent binary directly on the host requires `libopus` and

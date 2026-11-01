@@ -10,6 +10,7 @@ services:
     restart: unless-stopped
     environment:
       LIVEKIT_KEYS: "${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-change-me-to-a-32-plus-character-secret}"
+      LIVEKIT_CONFIG: "rtc: {tcp_port: 8891, udp_port: 8892}"
     ports:
       # Non-default host ports so this doesn't collide with another LiveKit
       # dev server (e.g. a separate project's own docker-compose) also using
@@ -18,8 +19,10 @@ services:
       # (8880-8882 turned out to collide with another project's dev LiveKit
       # server too, so this shifted again to 8890-8892.)
       - "8890:7880" # WebSocket signaling
-      - "8891:7881" # WebRTC over TCP (ICE-TCP fallback)
-      - "8892:7882/udp" # WebRTC over UDP (primary media)
+      # LiveKit tells clients to send media to these exact ports, so unlike the
+      # signaling port they must be the same on both sides. See LIVEKIT_CONFIG.
+      - "8891:8891" # WebRTC over TCP (ICE-TCP fallback)
+      - "8892:8892/udp" # WebRTC over UDP (primary media)
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:7880 || exit 0"]
       interval: 5s
@@ -42,10 +45,18 @@ services:
       # the LIVEKIT_URL in .env (ws://localhost:8890) is for processes
       # running on the host, like cmd/testclient.
       LIVEKIT_URL: ws://livekit-server:7880
+      # agent-pi and the auth service run in their own Compose stacks, on the
+      # host. .env's AGENT_PI_URL and AUTH_URL say localhost, which in here is
+      # this container, so these are separate settings.
+      AGENT_PI_URL: "${AGENT_PI_DOCKER_URL:-http://host.docker.internal:9800/agent}"
+      AUTH_URL: "${AUTH_DOCKER_URL:-http://host.docker.internal:8081}"
+      AUTH_CLIENT_SECRET: "${AUTH_CLIENT_SECRET:-${AUTH_LIVEKIT_AGENT_SECRET:-dev-only-t10-livekit-agent-secret-change-me}}"
       # Overrides any OTEL_EXPORTER_OTLP_ENDPOINT in .env — the containerized
       # agent always reaches the collector by service name. See
       # internal/telemetry.SetupOTel and the otel-lgtm service below.
       OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       livekit-server:
         condition: service_healthy

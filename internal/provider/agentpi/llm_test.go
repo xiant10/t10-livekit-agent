@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -134,6 +136,19 @@ func (s *server) submitted() []string {
 	return out
 }
 
+// lastNote is the note on the latest input call.
+func (s *server) lastNote() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	note := ""
+	for _, call := range s.calls {
+		if _, ok := call.Params["input"]; ok {
+			note, _ = call.Params["note"].(string)
+		}
+	}
+	return note
+}
+
 func (s *server) count(method string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -149,7 +164,7 @@ func (s *server) count(method string) int {
 func newLLM(t *testing.T, s *server, whenBusy string) *LLM {
 	t.Helper()
 	l, err := New(Options{
-		URL: s.srv.URL, Token: "token", Profile: "voice", WhenBusy: whenBusy,
+		URL: s.srv.URL, Tokens: fixedToken("token"), Profile: "voice", WhenBusy: whenBusy,
 		AdmissionTimeout: 2 * time.Second, IdleTimeout: 2 * time.Second, StuckGrace: 20 * time.Millisecond,
 	})
 	if err != nil {
@@ -213,7 +228,7 @@ func waitDelivered(t *testing.T, l *LLM) {
 }
 
 func TestNewValidates(t *testing.T) {
-	if _, err := New(Options{URL: "http://x", Token: "t", WhenBusy: "barge"}); err == nil || !strings.Contains(err.Error(), "AGENT_PI_WHEN_BUSY") {
+	if _, err := New(Options{URL: "http://x", Tokens: fixedToken("t"), WhenBusy: "barge"}); err == nil || !strings.Contains(err.Error(), "AGENT_PI_WHEN_BUSY") {
 		t.Fatalf("unknown WhenBusy: err = %v", err)
 	}
 	if _, err := New(Options{URL: "http://x", WhenBusy: WhenBusyInterrupt}); err == nil {
@@ -302,9 +317,11 @@ func TestInterruptDuringText(t *testing.T) {
 	if !errors.Is(a.err, provider.ErrSuperseded) || a.text != "First answer" {
 		t.Fatalf("first = %q, %v, want its partial text and ErrSuperseded", a.text, a.err)
 	}
-	want := "[Your previous reply was cut off. The caller heard at most: \"First answer\". Do not mention this.]\ntwo"
-	if inputs := s.submitted(); len(inputs) != 2 || inputs[1] != want {
+	if inputs := s.submitted(); len(inputs) != 2 || inputs[1] != "two" {
 		t.Fatalf("submitted = %q", inputs)
+	}
+	if note := s.lastNote(); note != "Your previous reply was cut off. The caller heard at most: \"First answer\". Do not mention this." {
+		t.Fatalf("note = %q", note)
 	}
 }
 
@@ -553,9 +570,11 @@ func TestBargeInCarriesWhatWasHeard(t *testing.T) {
 		t.Fatalf("second: %v", err)
 	}
 	// What the engine says was spoken, not the longer text that was generated.
-	want := "[Your previous reply was cut off. The caller heard at most: \"Hangzhou is the capital\". Do not mention this.]\ntwo"
-	if inputs := s.submitted(); inputs[1] != want {
+	if inputs := s.submitted(); inputs[1] != "two" {
 		t.Fatalf("submitted = %q", inputs)
+	}
+	if note := s.lastNote(); note != "Your previous reply was cut off. The caller heard at most: \"Hangzhou is the capital\". Do not mention this." {
+		t.Fatalf("note = %q", note)
 	}
 }
 
@@ -708,5 +727,190 @@ func TestMissingSessionFails(t *testing.T) {
 	s := newServer(t)
 	if _, err := newLLM(t, s, WhenBusyInterrupt).ChatStream(context.Background(), user("one"), nil); err == nil {
 		t.Fatal("want an error")
+	}
+}
+
+type fixedToken string
+
+func (f fixedToken) Token(context.Context, string) (string, error) { return string(f), nil }
+
+// recordingTokens answers with a token named after the grant it was asked for.
+type recordingTokens struct {
+	mu     sync.Mutex
+	grants []string
+	err    error
+}
+
+func (r *recordingTokens) Token(_ context.Context, grantID string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.grants = append(r.grants, grantID)
+	return "token-of-" + grantID, r.err
+}
+
+func TestEveryCallerReachesAgentPiWithTheirOwnToken(t *testing.T) {
+	var mu sync.Mutex
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Header.Get("Authorization"))
+		mu.Unlock()
+		http.Error(w, "stop here", http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	tokens := &recordingTokens{}
+	l, err := New(Options{URL: srv.URL, Tokens: tokens, Profile: "voice", WhenBusy: WhenBusyAuto})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, caller := range []string{"ada", "grace"} {
+		ctx := provider.WithGrant(provider.WithSession(context.Background(), caller), "grt_"+caller)
+		_, _ = l.ChatStream(ctx, []provider.Message{{Role: "user", Content: "hi"}}, func(string) {})
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(seen, []string{"Bearer token-of-grt_ada", "Bearer token-of-grt_grace"}) {
+		t.Fatalf("agent-pi saw %q", seen)
+	}
+}
+
+func TestATokenFailureFailsTheTurnBeforeAnythingIsSent(t *testing.T) {
+	var requests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	defer srv.Close()
+	stopped := errors.New("grant stopped")
+	l, err := New(Options{URL: srv.URL, Tokens: &recordingTokens{err: stopped}, Profile: "voice", WhenBusy: WhenBusyAuto})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := provider.WithSession(context.Background(), "ada")
+	_, err = l.ChatStream(ctx, []provider.Message{{Role: "user", Content: "hi"}}, func(string) {})
+	if !errors.Is(err, stopped) {
+		t.Fatalf("got %v", err)
+	}
+	if requests.Load() != 0 {
+		t.Fatal("reached agent-pi with no token")
+	}
+}
+
+func answered(w *stream) {
+	w.open(1)
+	w.result(map[string]any{"status": "done", "text": "OK."})
+}
+
+func TestACallJoinsTheConversationItNames(t *testing.T) {
+	s := newServer(t, answered)
+	ctx := provider.WithLiveCall(provider.WithConversation(alice, "chat-1"))
+	if _, err := newLLM(t, s, WhenBusyAuto).ChatStream(ctx, user("one"), nil); err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if s.count("session.list") != 0 || s.count("session.create") != 0 {
+		t.Fatalf("list = %d, create = %d, want neither", s.count("session.list"), s.count("session.create"))
+	}
+	var input map[string]any
+	for _, call := range s.calls {
+		if call.Method == "session.interrupt" {
+			input = call.Params
+		}
+	}
+	if input["sessionId"] != "chat-1" || input["input"] != "one" {
+		t.Fatalf("params = %v", input)
+	}
+	if note, _ := input["note"].(string); !strings.Contains(note, "read aloud") {
+		t.Fatalf("note = %q", note)
+	}
+}
+
+func TestAVoiceSessionNeedsNoSpokenNote(t *testing.T) {
+	s := newServer(t, answered)
+	if _, err := newLLM(t, s, WhenBusyAuto).ChatStream(alice, user("one"), nil); err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if note := s.lastNote(); note != "" {
+		t.Fatalf("note = %q", note)
+	}
+}
+
+func TestAMessageInACallRoomIsNotSpoken(t *testing.T) {
+	s := newServer(t, answered)
+	if _, err := newLLM(t, s, WhenBusyAuto).ChatStream(provider.WithConversation(alice, "chat-1"), user("one"), nil); err != nil {
+		t.Fatalf("ChatStream: %v", err)
+	}
+	if note := s.lastNote(); note != "" {
+		t.Fatalf("note = %q", note)
+	}
+}
+
+func TestACutOffCallTurnKeepsBothNotes(t *testing.T) {
+	s := newServer(t, answered, answered)
+	l := newLLM(t, s, WhenBusyAuto)
+	ctx := provider.WithLiveCall(provider.WithConversation(alice, "chat-1"))
+	if _, err := l.ChatStream(ctx, user("one"), nil); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	msgs := append(user("one"), provider.Message{Role: "assistant", Content: "Hang" + provider.InterruptedMarker}, provider.Message{Role: "user", Content: "two"})
+	if _, err := l.ChatStream(ctx, msgs, nil); err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if note := s.lastNote(); !strings.Contains(note, "read aloud") || !strings.Contains(note, `heard at most: "Hang"`) {
+		t.Fatalf("note = %q", note)
+	}
+}
+
+func TestANamedConversationIsNeverReplaced(t *testing.T) {
+	s := newServer(t, func(w *stream) {
+		w.w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w.w, `{"error":{"message":"session not found"}}`)
+	})
+	_, err := newLLM(t, s, WhenBusyAuto).ChatStream(provider.WithConversation(alice, "someone-elses"), user("one"), nil)
+	if err == nil || !strings.Contains(err.Error(), "session not found") {
+		t.Fatalf("err = %v", err)
+	}
+	if s.count("session.create") != 0 {
+		t.Fatal("created a session in place of the one the room named")
+	}
+}
+
+func TestARoomKeepsItsSessionAcrossStays(t *testing.T) {
+	s := newServer(t, answered, answered)
+	s.listed = []map[string]any{{"sessionId": "kept", "profile": "voice", "metadata": map[string]any{"identity": "voice-agent-demo/alice"}}}
+	l := newLLM(t, s, WhenBusyAuto)
+	first := provider.ForRoom(l, "1", "voice-agent-demo", "")
+	if _, err := first.ChatStream(alice, user("one"), nil); err != nil {
+		t.Fatalf("first stay: %v", err)
+	}
+	first.Release()
+	if _, err := provider.ForRoom(l, "2", "voice-agent-demo", "").ChatStream(alice, user("two"), nil); err != nil {
+		t.Fatalf("second stay: %v", err)
+	}
+	if s.count("session.create") != 0 {
+		t.Fatalf("creates = %d, want 0", s.count("session.create"))
+	}
+}
+
+func TestRoomsKeepTheirOwnPlace(t *testing.T) {
+	s := newServer(t, answered, answered, answered)
+	l := newLLM(t, s, WhenBusyAuto)
+	one, two := provider.ForRoom(l, "1", "room-1", "chat-1"), provider.ForRoom(l, "2", "room-2", "chat-2")
+	if _, err := one.ChatStream(alice, user("one"), nil); err != nil {
+		t.Fatalf("room one: %v", err)
+	}
+	if _, err := two.ChatStream(alice, user("two"), nil); err != nil {
+		t.Fatalf("room two: %v", err)
+	}
+	if inputs := s.submitted(); len(inputs) != 2 || inputs[1] != "two" {
+		t.Fatalf("submitted = %q", inputs)
+	}
+
+	// A new stay starts a new history, so an old cursor would skip its first words.
+	one.Release()
+	if _, err := one.ChatStream(alice, user("back"), nil); err != nil {
+		t.Fatalf("after release: %v", err)
+	}
+	if inputs := s.submitted(); len(inputs) != 3 || inputs[2] != "back" {
+		t.Fatalf("submitted = %q", inputs)
+	}
+	if got := len(l.sessions); got != 2 {
+		t.Fatalf("sessions held = %d, want 2", got)
 	}
 }

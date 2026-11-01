@@ -102,8 +102,13 @@ Alternatively, run only the LiveKit server in Docker and execute the agent direc
 docker compose up livekit-server
 
 # Terminal 2: Run agent on host
-go run ./cmd/agent -room voice-agent-demo
+go run ./cmd/agent
 ```
+
+The agent joins every room with someone in it within about a second, and leaves
+five seconds after it empties. Run one process per LiveKit server: a second would
+join the same rooms under the same identity. To run `TestServeJoinsACallAlreadyUnderWay`,
+set `T10_MESSAGE_SMOKE=1` with no agent running on that server, or that agent answers instead.
 
 ---
 

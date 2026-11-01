@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	lkproto "github.com/livekit/protocol/livekit"
 	lksdk "github.com/livekit/server-sdk-go/v2"
+	"github.com/pion/webrtc/v4"
 	"os"
 	"strings"
 	"t10-livekit-agent/internal/audio"
@@ -185,5 +187,56 @@ func TestMessageRoomSmoke(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The agent now arrives after the caller, whose microphone is already published.
+// Everything before this ran with the agent waiting in the room first. Run it
+// with no other agent on this LiveKit server, or that one answers instead.
+func TestServeJoinsACallAlreadyUnderWay(t *testing.T) {
+	if os.Getenv("T10_MESSAGE_SMOKE") != "1" {
+		t.Skip("set T10_MESSAGE_SMOKE=1 with local LiveKit running")
+	}
+	if err := config.LoadDotEnv("../../.env"); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Load()
+	roomName := fmt.Sprintf("ten_smoke__conv-%d", time.Now().UnixNano())
+	token, err := roomauth.MintToken(cfg.LiveKitAPIKey, cfg.LiveKitAPISecret, "caller", roomName, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscribed := make(chan string, 1)
+	cb := lksdk.NewRoomCallback()
+	cb.OnTrackSubscribed = func(_ *webrtc.TrackRemote, publication *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+		subscribed <- rp.Identity() + "/" + publication.Name()
+	}
+	caller, err := lksdk.ConnectToRoomWithToken(cfg.LiveKitURL, token, cb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer caller.Disconnect()
+	mic, err := lksdk.NewLocalSampleTrack(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := caller.LocalParticipant.PublishTrack(mic, &lksdk.TrackPublicationOptions{Name: "mic", Source: lkproto.TrackSource_MICROPHONE}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p := smokeProviders{}
+	go Serve(ctx, ServeOptions{
+		URL: cfg.LiveKitURL, APIKey: cfg.LiveKitAPIKey, APISecret: cfg.LiveKitAPISecret, Identity: "agent",
+		Deps: &engine.Deps{STT: p, LLM: p, TTS: p, Conversations: engine.NewManager("")},
+	})
+	select {
+	case got := <-subscribed:
+		if got != "agent/agent-voice" {
+			t.Fatalf("subscribed to %s", got)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the agent never started the call")
 	}
 }

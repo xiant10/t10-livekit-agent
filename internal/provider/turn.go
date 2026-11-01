@@ -14,8 +14,12 @@ const InterruptedMarker = " [interrupted]"
 var ErrSuperseded = errors.New("provider: superseded by a newer message")
 
 type (
-	sessionKey  struct{}
-	admittedKey struct{}
+	sessionKey      struct{}
+	sessionNameKey  struct{}
+	conversationKey struct{}
+	liveCallKey     struct{}
+	admittedKey     struct{}
+	grantKey        struct{}
 )
 
 // WithSession names the conversation a stateful provider should continue.
@@ -28,6 +32,99 @@ func WithSession(ctx context.Context, id string) context.Context {
 // SessionFrom returns the conversation WithSession named, or "".
 func SessionFrom(ctx context.Context) string {
 	id, _ := ctx.Value(sessionKey{}).(string)
+	return id
+}
+
+// WithSessionName is what a stateful provider finds the session under when it
+// keeps one between stays, in place of the key SessionFrom returns.
+func WithSessionName(ctx context.Context, name string) context.Context {
+	return context.WithValue(ctx, sessionNameKey{}, name)
+}
+
+// SessionNameFrom returns the name WithSessionName set, or else SessionFrom's key.
+func SessionNameFrom(ctx context.Context) string {
+	if name, ok := ctx.Value(sessionNameKey{}).(string); ok {
+		return name
+	}
+	return SessionFrom(ctx)
+}
+
+// WithLiveCall marks a turn as said on a live call, so its reply is read aloud.
+func WithLiveCall(ctx context.Context) context.Context {
+	return context.WithValue(ctx, liveCallKey{}, true)
+}
+
+// OnLiveCall reports whether WithLiveCall marked the turn.
+func OnLiveCall(ctx context.Context) bool {
+	live, _ := ctx.Value(liveCallKey{}).(bool)
+	return live
+}
+
+// WithConversation names an existing conversation the turn belongs to, as
+// opposed to one the provider finds or creates for the caller.
+func WithConversation(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, conversationKey{}, id)
+}
+
+// ConversationFrom returns the conversation WithConversation named, or "".
+func ConversationFrom(ctx context.Context) string {
+	id, _ := ctx.Value(conversationKey{}).(string)
+	return id
+}
+
+// Releaser is a provider that keeps state per session key, and can drop it.
+type Releaser interface {
+	Release(prefix string)
+}
+
+// roomLLM keeps one room's turns apart from another's. The same person can be
+// in two rooms, and each has its own history for the provider to keep up with.
+// A stay's ID changes every time the agent joins, so it keys only what lasts
+// that long. The session outlives it, under the room's name.
+type roomLLM struct {
+	LLMProvider
+	stay         string
+	room         string
+	conversation string
+}
+
+// RoomLLM is an LLMProvider scoped to one stay in a room.
+type RoomLLM interface {
+	LLMProvider
+	Release()
+}
+
+// ForRoom scopes llm to one stay in a room. conversation, when set, is the
+// conversation the room belongs to.
+func ForRoom(llm LLMProvider, stay, room, conversation string) RoomLLM {
+	return roomLLM{LLMProvider: llm, stay: stay, room: room, conversation: conversation}
+}
+
+func (l roomLLM) ChatStream(ctx context.Context, msgs []Message, onToken func(delta string)) (string, error) {
+	identity := SessionFrom(ctx)
+	ctx = WithSessionName(WithSession(ctx, l.stay+"/"+identity), l.room+"/"+identity)
+	if l.conversation != "" {
+		ctx = WithConversation(ctx, l.conversation)
+	}
+	return l.LLMProvider.ChatStream(ctx, msgs, onToken)
+}
+
+// Release drops what the provider holds for this room, if it holds anything.
+func (l roomLLM) Release() {
+	if releaser, ok := l.LLMProvider.(Releaser); ok {
+		releaser.Release(l.stay + "/")
+	}
+}
+
+// WithGrant names the agent grant a turn runs under, read from the participant's
+// LiveKit-signed attributes. It never comes from anything the caller typed.
+func WithGrant(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, grantKey{}, id)
+}
+
+// GrantFrom returns the grant WithGrant named, or "".
+func GrantFrom(ctx context.Context) string {
+	id, _ := ctx.Value(grantKey{}).(string)
 	return id
 }
 

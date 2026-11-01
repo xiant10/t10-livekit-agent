@@ -76,7 +76,7 @@ func newTextStreamHandler(room *lksdk.Room, deps *engine.Deps, queue *engine.Man
 				} else if strings.TrimSpace(text) == "" {
 					err = fmt.Errorf("empty text message")
 				} else {
-					ctx := provider.WithAdmitted(ctx, release)
+					ctx := provider.WithAdmitted(withGrant(ctx, room, identity), release)
 					_, err = engine.RunChatTurn(ctx, deps, identity, text, newChatReplySink(ctx, room, identity, status.id))
 				}
 			}

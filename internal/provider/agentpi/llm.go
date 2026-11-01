@@ -26,6 +26,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"t10-livekit-agent/internal/authclient"
 	"t10-livekit-agent/internal/config"
 	"t10-livekit-agent/internal/provider"
 	"t10-livekit-agent/internal/telemetry"
@@ -33,7 +34,11 @@ import (
 
 func init() {
 	provider.RegisterLLM("agent_pi", func(cfg config.Config) (provider.LLMProvider, error) {
-		return New(Options{URL: cfg.AgentPiURL, Token: cfg.AgentPiToken, Profile: cfg.AgentPiProfile, WhenBusy: cfg.AgentPiWhenBusy})
+		tokens, err := authclient.New(authclient.Options{URL: cfg.AuthURL, ClientID: cfg.AuthClientID, ClientSecret: cfg.AuthClientSecret})
+		if err != nil {
+			return nil, err
+		}
+		return New(Options{URL: cfg.AgentPiURL, Tokens: tokens, Profile: cfg.AgentPiProfile, WhenBusy: cfg.AgentPiWhenBusy})
 	})
 }
 
@@ -55,12 +60,26 @@ const (
 	// How long a queued input may stay unplaced after the run ahead of it
 	// failed. A healthy handover places it in the same commit.
 	defaultStuckGrace = 500 * time.Millisecond
+
+	// A voice session's profile says this already. A conversation started by
+	// typing doesn't, and keeps its model: only the style changes for a call.
+	// It stays in the history, so it speaks only of this message: later typed
+	// messages in the conversation aren't bound by it.
+	spokenNote = "This message was said on a live call, and your reply to it is read aloud as you write it. " +
+		"Answer it in one to three short sentences. Use plain sentences with no markdown, lists, tables, URLs or code. " +
+		"Say numbers, dates and times the way a person would. Answer in the language they are speaking."
 )
+
+// TokenSource turns the grant on a turn into a token for agent-pi. Tokens last
+// minutes, so one is fetched for each request rather than held.
+type TokenSource interface {
+	Token(ctx context.Context, grantID string) (string, error)
+}
 
 // Options configures New. The timeouts default when zero.
 type Options struct {
 	URL      string
-	Token    string
+	Tokens   TokenSource
 	Profile  string
 	WhenBusy string
 
@@ -69,7 +88,8 @@ type Options struct {
 	StuckGrace       time.Duration
 }
 
-// LLM is a client of one agent-pi endpoint, under one service identity.
+// LLM is a client of one agent-pi endpoint. Each caller reaches it as themselves,
+// through the grant on their turn.
 type LLM struct {
 	opts   Options
 	client *http.Client
@@ -92,8 +112,8 @@ func New(opts Options) (*LLM, error) {
 	if opts.URL == "" {
 		return nil, errors.New("agentpi: AGENT_PI_URL is required")
 	}
-	if opts.Token == "" {
-		return nil, errors.New("agentpi: AGENT_PI_TOKEN is required")
+	if opts.Tokens == nil {
+		return nil, errors.New("agentpi: a token source is required")
 	}
 	switch opts.WhenBusy {
 	case WhenBusyAuto, WhenBusyInterrupt, WhenBusySteer, WhenBusyFollowUp:
@@ -130,13 +150,16 @@ func (l *LLM) ChatStream(ctx context.Context, msgs []provider.Message, onToken f
 	s := l.session(key)
 
 	s.mu.Lock()
-	input, cursor := s.pending(msgs, l.opts.WhenBusy == WhenBusyAuto || l.opts.WhenBusy == WhenBusyInterrupt)
+	input, note, cursor := s.pending(msgs, l.opts.WhenBusy == WhenBusyAuto || l.opts.WhenBusy == WhenBusyInterrupt)
+	if provider.OnLiveCall(ctx) && provider.ConversationFrom(ctx) != "" {
+		note = strings.TrimSpace(spokenNote + " " + note)
+	}
 	if input == "" {
 		s.mu.Unlock()
 		// A concurrent turn already carried these words.
 		return "", provider.ErrSuperseded
 	}
-	c, err := l.admit(ctx, s, input)
+	c, err := l.admit(ctx, s, input, note)
 	if err == nil {
 		s.sent = cursor
 	}
@@ -160,7 +183,7 @@ func (l *LLM) ChatStream(ctx context.Context, msgs []provider.Message, onToken f
 		err = nil
 	}
 	if err == nil {
-		c, err = l.admit(ctx, s, input)
+		c, err = l.admit(ctx, s, input, note)
 	}
 	s.mu.Unlock()
 	if err != nil {
@@ -180,13 +203,26 @@ func (l *LLM) session(key string) *session {
 	return s
 }
 
-// pending returns the next input and the cursor to store once it is admitted.
+// Release forgets the sessions whose key starts with prefix. A key's cursor only
+// means anything alongside the history it counted, and that went with the room.
+func (l *LLM) Release(prefix string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for key := range l.sessions {
+		if strings.HasPrefix(key, prefix) {
+			delete(l.sessions, key)
+		}
+	}
+}
+
+// pending returns the next input, a note for the model, and the cursor to store
+// once it is admitted.
 // A cursor rather than "the trailing user messages" because an interruption
 // before anything was spoken appends no assistant message, and a second message
 // arrives before the first has a reply: both would resend the first message.
-func (s *session) pending(msgs []provider.Message, interrupts bool) (string, int) {
+func (s *session) pending(msgs []provider.Message, interrupts bool) (string, string, int) {
 	if s.sent >= len(msgs) {
-		return "", s.sent
+		return "", "", s.sent
 	}
 	var users []string
 	heard := ""
@@ -201,7 +237,7 @@ func (s *session) pending(msgs []provider.Message, interrupts bool) (string, int
 		}
 	}
 	if len(users) == 0 {
-		return "", len(msgs)
+		return "", "", len(msgs)
 	}
 	if heard == "" && interrupts && s.active.open() {
 		// The turn being cut off is still running, so its partial reply is
@@ -209,13 +245,14 @@ func (s *session) pending(msgs []provider.Message, interrupts bool) (string, int
 		heard = s.active.text()
 	}
 	input := strings.Join(users, "\n")
+	note := ""
 	if heard != "" {
 		// The model never sees an aborted answer, and a live reply generated
 		// further than the caller heard: tell it what actually arrived. "At
 		// most" because the text is whole chunks, some cut off mid-playback.
-		input = "[Your previous reply was cut off. The caller heard at most: \"" + heard + "\". Do not mention this.]\n" + input
+		note = "Your previous reply was cut off. The caller heard at most: \"" + heard + "\". Do not mention this."
 	}
-	return input, len(msgs)
+	return input, note, len(msgs)
 }
 
 // admit makes sure the session exists and submits input. Callers hold s.mu.
@@ -224,20 +261,22 @@ func (s *session) pending(msgs []provider.Message, interrupts bool) (string, int
 // so a barge-in during the POST would leave it unknown whether the input went
 // in, and the next turn would send it twice. SSE headers are sent only after
 // admission, so a response means the input is durably in.
-func (l *LLM) admit(ctx context.Context, s *session, input string) (*call, error) {
+func (l *LLM) admit(ctx context.Context, s *session, input, note string) (*call, error) {
 	if s.id == "" {
 		if err := l.openSession(ctx, s); err != nil {
 			return nil, err
 		}
 	}
-	resp, err := l.submit(ctx, s, input)
+	resp, err := l.submit(ctx, s, input, note)
 	var refused *refusedError
-	if errors.As(err, &refused) && refused.status == http.StatusNotFound {
+	// A named conversation is the only one this turn may land in. If it has
+	// gone, or isn't the caller's, a new one would hide that.
+	if errors.As(err, &refused) && refused.status == http.StatusNotFound && provider.ConversationFrom(ctx) == "" {
 		s.id = ""
 		if err := l.openSession(ctx, s); err != nil {
 			return nil, err
 		}
-		resp, err = l.submit(ctx, s, input)
+		resp, err = l.submit(ctx, s, input, note)
 	}
 	if err != nil {
 		return nil, err
@@ -255,10 +294,14 @@ func (l *LLM) admit(ctx context.Context, s *session, input string) (*call, error
 }
 
 // openSession finds this conversation's session or creates one. Reuse matters
-// because every identity shares one token, and agent-pi caps sessions per user:
-// creating one on every start would exhaust the limit after a few restarts.
+// because agent-pi caps sessions per user: creating one on every start would
+// exhaust the limit after a few restarts.
 func (l *LLM) openSession(ctx context.Context, s *session) error {
-	key := provider.SessionFrom(ctx)
+	if id := provider.ConversationFrom(ctx); id != "" {
+		s.id = id
+		return nil
+	}
+	key := provider.SessionNameFrom(ctx)
 	var list struct {
 		Sessions []struct {
 			SessionID string         `json:"sessionId"`
@@ -289,8 +332,11 @@ func (l *LLM) openSession(ctx context.Context, s *session) error {
 // submit POSTs input and returns once it is admitted. It retries a failed
 // connection once with the same requestId: durable deduplicates on it, and a
 // retried interrupt does not abort a second time.
-func (l *LLM) submit(ctx context.Context, s *session, input string) (*http.Response, error) {
+func (l *LLM) submit(ctx context.Context, s *session, input, note string) (*http.Response, error) {
 	params := map[string]any{"sessionId": s.id, "input": input, "requestId": newRequestID()}
+	if note != "" {
+		params["note"] = note
+	}
 	if id := telemetry.TurnID(ctx); id != "" {
 		params["turnId"] = id
 	}
@@ -315,7 +361,9 @@ func (l *LLM) submit(ctx context.Context, s *session, input string) (*http.Respo
 		if err != nil {
 			return nil, fmt.Errorf("agentpi: build %s: %w", method, err)
 		}
-		l.setHeaders(req, s.id, "application/json, text/event-stream")
+		if err := l.setHeaders(context.WithoutCancel(ctx), req, s.id, "application/json, text/event-stream"); err != nil {
+			return nil, err
+		}
 		setTraceparent(ctx, req)
 		if resp, err = l.client.Do(req); err == nil {
 			break
@@ -348,7 +396,9 @@ func (l *LLM) rpc(ctx context.Context, method string, params map[string]any, out
 	if err != nil {
 		return fmt.Errorf("agentpi: build %s: %w", method, err)
 	}
-	l.setHeaders(req, "", "application/json")
+	if err := l.setHeaders(ctx, req, "", "application/json"); err != nil {
+		return err
+	}
 	setTraceparent(ctx, req)
 	resp, err := l.client.Do(req)
 	if err != nil {
@@ -373,13 +423,18 @@ func (l *LLM) rpc(ctx context.Context, method string, params map[string]any, out
 	return nil
 }
 
-func (l *LLM) setHeaders(req *http.Request, sessionID, accept string) {
+func (l *LLM) setHeaders(ctx context.Context, req *http.Request, sessionID, accept string) error {
+	token, err := l.opts.Tokens.Token(ctx, provider.GrantFrom(ctx))
+	if err != nil {
+		return err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", accept)
-	req.Header.Set("Authorization", "Bearer "+l.opts.Token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	if sessionID != "" {
 		req.Header.Set(sessionHeader, sessionID)
 	}
+	return nil
 }
 
 // setTraceparent makes agent-pi's work for this request part of the turn's trace.

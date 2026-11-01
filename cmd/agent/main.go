@@ -1,5 +1,5 @@
-// Command agent is the voice agent process: it joins one LiveKit room and
-// serves text, voice-message, and live-call mode to whoever connects.
+// Command agent is the voice agent process: it joins every LiveKit room with
+// someone in it and serves text, voice-message, and live-call mode to them.
 package main
 
 import (
@@ -22,7 +22,6 @@ import (
 	_ "t10-livekit-agent/internal/provider/agentpi"
 	_ "t10-livekit-agent/internal/provider/openaicompat"
 	_ "t10-livekit-agent/internal/provider/qwen"
-	"t10-livekit-agent/internal/roomauth"
 	"t10-livekit-agent/internal/telemetry"
 )
 
@@ -43,7 +42,6 @@ const defaultSystemPrompt = "You are a voice assistant on a live phone call. " +
 
 func main() {
 	envPath := flag.String("env", ".env", "path to .env file")
-	roomName := flag.String("room", "voice-agent-demo", "LiveKit room to join")
 	identity := flag.String("identity", "agent", "agent participant identity")
 	systemPrompt := flag.String("system-prompt", defaultSystemPrompt, "system prompt for the LLM")
 	logPath := flag.String("log-file", "t10-agent.log", "diagnostic log file (empty disables file logging)")
@@ -105,11 +103,6 @@ func main() {
 		fatal("tts provider", err)
 	}
 
-	token, err := roomauth.MintToken(cfg.LiveKitAPIKey, cfg.LiveKitAPISecret, *identity, *roomName, 24*time.Hour)
-	if err != nil {
-		fatal("mint token", err)
-	}
-
 	deps := &engine.Deps{
 		STT:           sttProvider,
 		LLM:           llmProvider,
@@ -132,19 +125,21 @@ func main() {
 		MaxChunkRunes:  cfg.LiveMaxChunkRunes,
 	}
 
-	r, err := livekit.Join(cfg.LiveKitURL, token, deps, liveCfg)
-	if err != nil {
-		fatal("join room", err)
-	}
-	defer r.Disconnect()
-
-	slog.Info("agent connected", "room", *roomName, "identity", *identity, "livekit_url", cfg.LiveKitURL,
+	slog.Info("agent serving rooms", "identity", *identity, "livekit_url", cfg.LiveKitURL,
 		"stt", cfg.STTProvider, "llm", cfg.LLMProvider, "tts", cfg.TTSProvider, "model", cfg.OpenAIModel)
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	<-sigCh
-	slog.Info("shutting down")
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	livekit.Serve(ctx, livekit.ServeOptions{
+		URL:          cfg.LiveKitURL,
+		APIKey:       cfg.LiveKitAPIKey,
+		APISecret:    cfg.LiveKitAPISecret,
+		Identity:     *identity,
+		SystemPrompt: *systemPrompt,
+		Deps:         deps,
+		Live:         liveCfg,
+	})
+	slog.InfoContext(ctx, "shut down")
 }
 
 func fatal(what string, err error) {

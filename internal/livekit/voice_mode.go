@@ -41,7 +41,7 @@ func newVoiceStreamHandler(room *lksdk.Room, deps *engine.Deps, queue *engine.Ma
 				var data []byte
 				data, err = readMessage(ctx, reader)
 				if err == nil {
-					err = handleVoiceMessage(provider.WithAdmitted(ctx, release), deps, identity, data, sink)
+					err = handleVoiceMessage(provider.WithAdmitted(withGrant(ctx, room, identity), release), deps, identity, data, sink)
 				}
 			}
 			status.finish(err, sink.chunks)

@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"t10-livekit-agent/internal/audio"
+	"t10-livekit-agent/internal/provider"
 )
 
 // streamingTTS releases audio only when the test says so, one piece per send
@@ -201,4 +203,46 @@ func TestLiveCallController_LogsSpeechThatTranscribedToNothing(t *testing.T) {
 	if got := logs.String(); !strings.Contains(got, `reason="empty transcript"`) {
 		t.Fatalf("log:\n%s", got)
 	}
+}
+
+func TestLiveCallController_FailedTurnIsSpokenInTheCallersLanguage(t *testing.T) {
+	for _, tc := range []struct{ said, want string }{
+		{"how was the quarter", "Sorry"},
+		{"这个季度怎么样", "抱歉"},
+	} {
+		tts := &recordingTTS{}
+		deps := &Deps{TTS: tts, LLM: failingLLM{}, Conversations: NewManager(""), Voice: "Cherry"}
+		ctrl := NewLiveCallController(context.Background(), deps, "bob", testLiveConfig())
+		ctrl.handleTurn([]string{tc.said}, newFakeSink(16000), 0)
+		ctrl.stopCall()
+		if said := tts.said(); !strings.Contains(said, tc.want) {
+			t.Fatalf("after %q the caller heard %q", tc.said, said)
+		}
+	}
+}
+
+type failingLLM struct{}
+
+func (failingLLM) ChatStream(context.Context, []provider.Message, func(string)) (string, error) {
+	return "", errors.New("agent-pi refused")
+}
+
+type recordingTTS struct {
+	fakeTTS
+	mu   sync.Mutex
+	text []string
+}
+
+func (r *recordingTTS) Synthesize(ctx context.Context, text, voice string) ([]byte, int, error) {
+	r.mu.Lock()
+	r.text = append(r.text, text)
+	r.mu.Unlock()
+	r.sampleRate = 16000
+	return r.fakeTTS.Synthesize(ctx, text, voice)
+}
+
+func (r *recordingTTS) said() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return strings.Join(r.text, " ")
 }

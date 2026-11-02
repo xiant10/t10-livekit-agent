@@ -43,7 +43,7 @@ func init() {
 		if err != nil {
 			return nil, err
 		}
-		return New(Options{URL: cfg.AgentPiURL, Replicas: replicas, Tokens: tokens, Profile: cfg.AgentPiProfile, WhenBusy: cfg.AgentPiWhenBusy})
+		return New(Options{URL: cfg.AgentPiURL, Replicas: replicas, RoutesFile: cfg.AgentRoutesFile, Tokens: tokens, Profile: cfg.AgentPiProfile, WhenBusy: cfg.AgentPiWhenBusy})
 	})
 }
 
@@ -86,9 +86,12 @@ type Options struct {
 	URL string
 	// Replicas maps a session ID's prefix to its replica's URL. URL takes the rest.
 	Replicas map[string]string
-	Tokens   TokenSource
-	Profile  string
-	WhenBusy string
+	// RoutesFile is a routing document. When set, Replicas isn't read: sources
+	// don't fall through to each other.
+	RoutesFile string
+	Tokens     TokenSource
+	Profile    string
+	WhenBusy   string
 
 	AdmissionTimeout time.Duration
 	IdleTimeout      time.Duration
@@ -101,6 +104,7 @@ type LLM struct {
 	opts   Options
 	client *http.Client
 
+	routes   *routeFile
 	mu       sync.Mutex
 	sessions map[string]*session
 }
@@ -141,7 +145,14 @@ func New(opts Options) (*LLM, error) {
 	transport.ResponseHeaderTimeout = opts.AdmissionTimeout
 	// No Client.Timeout: it would cover the whole body, and a tool round can
 	// legitimately outlast it. The idle watchdog in follow bounds the stream.
-	return &LLM{opts: opts, client: &http.Client{Transport: transport}, sessions: map[string]*session{}}, nil
+	var routes *routeFile
+	if opts.RoutesFile != "" {
+		var err error
+		if routes, err = openRouteFile(opts.RoutesFile, time.Now); err != nil {
+			return nil, err
+		}
+	}
+	return &LLM{opts: opts, client: &http.Client{Transport: transport}, routes: routes, sessions: map[string]*session{}}, nil
 }
 
 // ChatStream submits the unsent user messages in msgs and streams the reply.
@@ -340,8 +351,12 @@ func (l *LLM) openSession(ctx context.Context, s *session) error {
 // <agent>.<replica>.<n>, and a session stays on its replica for life, so
 // everything before the last dot names it. A new session goes to URL.
 func (l *LLM) urlFor(sessionID string) string {
+	replicas := l.opts.Replicas
+	if l.routes != nil {
+		replicas = l.routes.current()
+	}
 	if at := strings.LastIndex(sessionID, "."); at > 0 {
-		if url, ok := l.opts.Replicas[sessionID[:at]]; ok {
+		if url, ok := replicas[sessionID[:at]]; ok {
 			return url
 		}
 	}

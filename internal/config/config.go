@@ -70,6 +70,7 @@ type Config struct {
 	// already working: "auto", "interrupt", "steer" or "followUp".
 	AgentPiURL      string
 	AgentURLs       string
+	AgentRoutesFile string
 	AgentPiProfile  string
 	AgentPiWhenBusy string
 
@@ -160,6 +161,7 @@ func Load() Config {
 
 		AgentPiURL:      getenv("AGENT_PI_URL", "http://localhost:9800/agent"),
 		AgentURLs:       getenv("AGENT_URLS", ""),
+		AgentRoutesFile: getenv("AGENT_ROUTES_FILE", ""),
 		AgentPiProfile:  getenv("AGENT_PI_PROFILE", "voice"),
 		AgentPiWhenBusy: getenv("AGENT_PI_WHEN_BUSY", "auto"),
 

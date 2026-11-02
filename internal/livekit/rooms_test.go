@@ -278,3 +278,32 @@ func TestShutdownLeavesEveryRoom(t *testing.T) {
 		t.Fatal("still in a room after shutting down")
 	}
 }
+
+type slowStay struct{ *fakeStay }
+
+func (s slowStay) Leave() {
+	time.Sleep(20 * time.Millisecond)
+	s.fakeStay.Leave()
+}
+
+func TestShutdownWaitsForALastCallStillLeaving(t *testing.T) {
+	f, s := newFakeRooms()
+	claims := &fakeClaims{taken: map[string]bool{}}
+	s.claims = claims
+	f.set(occupied("a"))
+	s.reconcile(context.Background(), time.Now())
+	settled(t, s, "a")
+	conn := f.stays["a"]
+	conn.callers.Store(0)
+	s.mu.Lock()
+	s.rooms["a"].conn = slowStay{conn}
+	s.mu.Unlock()
+
+	tick := make(chan time.Time, 1)
+	tick <- time.Now().Add(roomGrace)
+	s.drain(context.Background(), tick, nil)
+	s.leaveAll(context.Background())
+	if !conn.left.Load() || claims.releases() != 1 {
+		t.Fatalf("exiting with left=%v, releases=%d", conn.left.Load(), claims.releases())
+	}
+}

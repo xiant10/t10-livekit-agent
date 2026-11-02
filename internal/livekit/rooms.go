@@ -85,6 +85,9 @@ type roomServer struct {
 	failed      bool
 	claimFailed bool
 	draining    bool
+	// departing lets shutdown wait for rooms already on their way out, so a claim
+	// isn't left to lapse.
+	departing sync.WaitGroup
 }
 
 // visit's conn is nil while joining.
@@ -251,7 +254,7 @@ func (s *roomServer) reconcile(ctx context.Context, now time.Time) {
 			room.occupied = now
 		case now.Sub(room.occupied) >= roomGrace:
 			delete(s.rooms, name)
-			go s.depart(ctx, name, room.conn)
+			s.departing.Go(func() { s.depart(ctx, name, room.conn) })
 			slog.InfoContext(ctx, "rooms: left", "room", name)
 		}
 	}
@@ -294,7 +297,7 @@ func (s *roomServer) enter(ctx context.Context, name string) {
 	if !ok {
 		// Shut down, or lost the claim, during the join, so nothing else will
 		// leave this room.
-		go s.depart(ctx, name, conn)
+		s.departing.Go(func() { s.depart(ctx, name, conn) })
 		return
 	}
 	room.conn = conn
@@ -363,15 +366,14 @@ func (s *roomServer) release(ctx context.Context, name string) {
 
 func (s *roomServer) leaveAll(ctx context.Context) {
 	s.mu.Lock()
-	var wg sync.WaitGroup
 	for name, room := range s.rooms {
 		if room.conn != nil {
-			wg.Go(func() { s.depart(ctx, name, room.conn) })
+			s.departing.Go(func() { s.depart(ctx, name, room.conn) })
 		}
 		delete(s.rooms, name)
 	}
 	s.mu.Unlock()
-	wg.Wait()
+	s.departing.Wait()
 }
 
 // roomStay is a joined room, and what the room's turns kept for it.

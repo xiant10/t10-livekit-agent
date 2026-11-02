@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"t10-livekit-agent/internal/telemetry"
 )
 
 const (
@@ -128,6 +130,9 @@ func (c *Client) mint(ctx context.Context, grantID string) (string, time.Time, e
 		return "", time.Time{}, fmt.Errorf("authclient: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if traceparent := telemetry.Traceparent(ctx); traceparent != "" {
+		req.Header.Set("traceparent", traceparent)
+	}
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("authclient: exchange: %w", err)

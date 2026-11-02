@@ -45,7 +45,7 @@ spec:
             - name: AGENT_PI_URL
               value: http://agent-pi-0.agent-pi.t10.svc.cluster.local:9800/agent
             - name: AGENT_URLS
-              value: assistant.agent-pi-0=http://agent-pi-0.agent-pi.t10.svc.cluster.local:9800
+              value: assistant.agent-pi-0=http://agent-pi-0.agent-pi.t10.svc.cluster.local:9800,sales.agent-sales-0=http://agent-sales-0.agent-sales.t10.svc.cluster.local:9810
             - name: AUTH_URL
               value: http://auth-server.t10.svc.cluster.local:8081
             - name: VOICE_DRAIN_SECONDS

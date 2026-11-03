@@ -1,14 +1,14 @@
 # Design
 
 System ownership, future auth/business projects, and review findings are in
-[the workspace architecture](../../docs/ARCHITECTURE.md).
+[the workspace architecture](../../ARCHITECTURE.md).
 
 ## 1. Overview
 
 This is a small, real, runnable voice agent built around the STT→LLM→TTS
 pattern on top of [LiveKit](https://livekit.io). It supports three ways of
 talking to it — pure text, an uploaded voice message, and a live realtime
-call — over a single LiveKit room per conversation.
+call — over a single LiveKit room per conversation. On t10, text and history go over `/agent` instead, and a room exists only for a call or a voice message: see "Communication and scaling" in the workspace architecture. The worker's room text path stays for standalone use and `t10-mac-client`.
 
 It's a deliberately simplified sibling of a much larger Python project
 (`livekit-agent`, a sales-CRM voice assistant): that project's business logic

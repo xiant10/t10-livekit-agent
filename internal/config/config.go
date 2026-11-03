@@ -71,6 +71,9 @@ type Config struct {
 	AgentPiURL      string
 	AgentURLs       string
 	AgentRoutesFile string
+	// AgentControlURL is t10-agent-control. When set, AgentRoutesFile and AgentURLs
+	// aren't read.
+	AgentControlURL string
 	AgentPiProfile  string
 	AgentPiWhenBusy string
 
@@ -162,6 +165,7 @@ func Load() Config {
 		AgentPiURL:      getenv("AGENT_PI_URL", "http://localhost:9800/agent"),
 		AgentURLs:       getenv("AGENT_URLS", ""),
 		AgentRoutesFile: getenv("AGENT_ROUTES_FILE", ""),
+		AgentControlURL: getenv("AGENT_CONTROL_URL", ""),
 		AgentPiProfile:  getenv("AGENT_PI_PROFILE", "voice"),
 		AgentPiWhenBusy: getenv("AGENT_PI_WHEN_BUSY", "auto"),
 

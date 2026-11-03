@@ -49,8 +49,9 @@ type Client struct {
 	opts   Options
 	client *http.Client
 
-	mu     sync.Mutex
-	tokens map[string]*entry
+	mu      sync.Mutex
+	tokens  map[string]*entry
+	service entry
 }
 
 // entry's mu is held across a mint, so a burst on one grant makes one request
@@ -97,6 +98,24 @@ func (c *Client) Token(ctx context.Context, grantID string) (string, error) {
 	return token, nil
 }
 
+// ServiceToken returns this service's own token, which speaks for no user. It's
+// for t10-agent-control's routes, never for anything done during a call.
+func (c *Client) ServiceToken(ctx context.Context) (string, error) {
+	c.service.mu.Lock()
+	defer c.service.mu.Unlock()
+	if time.Until(c.service.expires) > renewBefore {
+		return c.service.token, nil
+	}
+	token, expires, err := c.exchange(ctx, map[string]string{
+		"grant_type": "client_credentials", "client_id": c.opts.ClientID, "client_secret": c.opts.ClientSecret,
+	})
+	if err != nil {
+		return "", err
+	}
+	c.service.token, c.service.expires = token, expires
+	return token, nil
+}
+
 func (c *Client) entry(grantID string) *entry {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -119,9 +138,13 @@ func (c *Client) entry(grantID string) *entry {
 }
 
 func (c *Client) mint(ctx context.Context, grantID string) (string, time.Time, error) {
-	body, err := json.Marshal(map[string]string{
+	return c.exchange(ctx, map[string]string{
 		"grant_type": "agent_grant", "client_id": c.opts.ClientID, "client_secret": c.opts.ClientSecret, "grant_id": grantID,
 	})
+}
+
+func (c *Client) exchange(ctx context.Context, fields map[string]string) (string, time.Time, error) {
+	body, err := json.Marshal(fields)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("authclient: marshal: %w", err)
 	}

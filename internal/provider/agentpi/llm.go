@@ -43,7 +43,7 @@ func init() {
 		if err != nil {
 			return nil, err
 		}
-		return New(Options{URL: cfg.AgentPiURL, Replicas: replicas, RoutesFile: cfg.AgentRoutesFile, Tokens: tokens, Profile: cfg.AgentPiProfile, WhenBusy: cfg.AgentPiWhenBusy})
+		return New(Options{URL: cfg.AgentPiURL, Replicas: replicas, RoutesFile: cfg.AgentRoutesFile, ControlURL: cfg.AgentControlURL, ServiceTokens: tokens, Tokens: tokens, Profile: cfg.AgentPiProfile, WhenBusy: cfg.AgentPiWhenBusy})
 	})
 }
 
@@ -89,9 +89,13 @@ type Options struct {
 	// RoutesFile is a routing document. When set, Replicas isn't read: sources
 	// don't fall through to each other.
 	RoutesFile string
-	Tokens     TokenSource
-	Profile    string
-	WhenBusy   string
+	// ControlURL is t10-agent-control, followed in the background. When set,
+	// RoutesFile and Replicas aren't read. ServiceTokens signs in to it.
+	ControlURL    string
+	ServiceTokens ServiceTokens
+	Tokens        TokenSource
+	Profile       string
+	WhenBusy      string
 
 	AdmissionTimeout time.Duration
 	IdleTimeout      time.Duration
@@ -104,7 +108,7 @@ type LLM struct {
 	opts   Options
 	client *http.Client
 
-	routes   *routeFile
+	routes   routeSource
 	mu       sync.Mutex
 	sessions map[string]*session
 }
@@ -145,12 +149,17 @@ func New(opts Options) (*LLM, error) {
 	transport.ResponseHeaderTimeout = opts.AdmissionTimeout
 	// No Client.Timeout: it would cover the whole body, and a tool round can
 	// legitimately outlast it. The idle watchdog in follow bounds the stream.
-	var routes *routeFile
-	if opts.RoutesFile != "" {
-		var err error
-		if routes, err = openRouteFile(opts.RoutesFile, time.Now); err != nil {
+	var routes routeSource
+	if opts.ControlURL != "" {
+		followed := newRouteControl(opts.ControlURL, opts.ServiceTokens)
+		go followed.follow(context.Background())
+		routes = followed
+	} else if opts.RoutesFile != "" {
+		file, err := openRouteFile(opts.RoutesFile, time.Now)
+		if err != nil {
 			return nil, err
 		}
+		routes = file
 	}
 	return &LLM{opts: opts, client: &http.Client{Transport: transport}, routes: routes, sessions: map[string]*session{}}, nil
 }

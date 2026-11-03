@@ -1,8 +1,12 @@
 package agentpi
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -72,5 +76,63 @@ func TestSessionsRouteThroughTheRoutesFile(t *testing.T) {
 	}
 	if got := l.urlFor("nobody.r0.7"); got != "http://default/agent" {
 		t.Fatalf("an unknown prefix went to %q", got)
+	}
+}
+
+type fixedServiceToken string
+
+func (f fixedServiceToken) ServiceToken(context.Context) (string, error) { return string(f), nil }
+
+func TestRouteControlKeepsTheLastGoodCopy(t *testing.T) {
+	var status atomic.Int32
+	var doc atomic.Value
+	doc.Store(routesDoc)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/routes" || r.Header.Get("Authorization") != "Bearer service" || r.Header.Get(instanceHeader) == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if code := status.Load(); code != 0 {
+			w.WriteHeader(int(code))
+			return
+		}
+		w.Header().Set("ETag", `"one"`)
+		if r.Header.Get("If-None-Match") == `"one"` {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		_, _ = w.Write([]byte(doc.Load().(string)))
+	}))
+	defer server.Close()
+
+	c := newRouteControl(server.URL, fixedServiceToken("service"))
+	ctx := context.Background()
+	if err := c.fetch(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.current()["sales.r0"]; got != "http://a:9810/agent" {
+		t.Fatalf("replica: %q", got)
+	}
+	if err := c.fetch(ctx); err != nil {
+		t.Fatalf("unchanged: %v", err)
+	}
+
+	status.Store(http.StatusServiceUnavailable)
+	if err := c.fetch(ctx); err == nil {
+		t.Fatal("no error from an outage")
+	}
+	if got := c.current()["sales.r0"]; got == "" {
+		t.Fatal("an outage lost the routes, which would drop live calls")
+	}
+
+	// A bad document needs a new ETag to arrive at all, so start from none.
+	status.Store(0)
+	doc.Store(`{"pools":{}}`)
+	c.etag = ""
+	if err := c.fetch(ctx); err == nil {
+		t.Fatal("a bad snapshot was taken")
+	}
+	if got := c.current()["sales.r0"]; got == "" {
+		t.Fatal("a bad snapshot lost the routes")
 	}
 }

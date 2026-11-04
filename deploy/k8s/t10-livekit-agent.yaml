@@ -39,15 +39,15 @@ spec:
           args: [-log-file=]
           env:
             - name: LIVEKIT_URL
-              value: ws://livekit.t10.svc.cluster.local:7880
+              value: ws://livekit.t10.svc.cluster.local:18200
             - name: LLM_PROVIDER
               value: agent_pi
             - name: AGENT_PI_URL
-              value: http://agent-pi-0.agent-pi.t10.svc.cluster.local:9800/agent
+              value: http://agent-pi-0.agent-pi.t10.svc.cluster.local:18100/agent
             - name: AGENT_URLS
-              value: assistant.agent-pi-0=http://agent-pi-0.agent-pi.t10.svc.cluster.local:9800,sales.agent-sales-0=http://agent-sales-0.agent-sales.t10.svc.cluster.local:9810
+              value: assistant.agent-pi-0=http://agent-pi-0.agent-pi.t10.svc.cluster.local:18100,sales.agent-sales-0=http://agent-sales-0.agent-sales.t10.svc.cluster.local:18110
             - name: AUTH_URL
-              value: http://auth-server.t10.svc.cluster.local:8081
+              value: http://auth-server.t10.svc.cluster.local:18000
             - name: VOICE_DRAIN_SECONDS
               value: "600"
             - name: VOICE_MAX_CALLS

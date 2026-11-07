@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
-	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/log/global"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -31,6 +32,10 @@ import (
 // degrades to a correctly-propagating no-op without it, so this is purely
 // additive (see the package doc).
 func SetupOTel(ctx context.Context, serviceName, endpoint string) (shutdown func(context.Context) error, err error) {
+	target, err := url.Parse(endpoint)
+	if err != nil || (target.Scheme != "http" && target.Scheme != "https") || target.Host == "" {
+		return nil, fmt.Errorf("OTEL_EXPORTER_OTLP_ENDPOINT must be a URL such as http://collector:4318, not %q", endpoint)
+	}
 	res, err := resource.New(ctx,
 		resource.WithTelemetrySDK(),
 		resource.WithHost(),
@@ -40,10 +45,7 @@ func SetupOTel(ctx context.Context, serviceName, endpoint string) (shutdown func
 		return nil, fmt.Errorf("build otel resource: %w", err)
 	}
 
-	traceExp, err := otlptracegrpc.New(ctx,
-		otlptracegrpc.WithEndpoint(endpoint),
-		otlptracegrpc.WithInsecure(),
-	)
+	traceExp, err := otlptracehttp.New(ctx, otlptracehttp.WithEndpointURL(target.JoinPath("v1/traces").String()))
 	if err != nil {
 		return nil, fmt.Errorf("dial otlp trace exporter at %q: %w", endpoint, err)
 	}
@@ -52,10 +54,7 @@ func SetupOTel(ctx context.Context, serviceName, endpoint string) (shutdown func
 		sdktrace.WithResource(res),
 	)
 
-	metricExp, err := otlpmetricgrpc.New(ctx,
-		otlpmetricgrpc.WithEndpoint(endpoint),
-		otlpmetricgrpc.WithInsecure(),
-	)
+	metricExp, err := otlpmetrichttp.New(ctx, otlpmetrichttp.WithEndpointURL(target.JoinPath("v1/metrics").String()))
 	if err != nil {
 		return nil, fmt.Errorf("dial otlp metric exporter at %q: %w", endpoint, err)
 	}
@@ -71,10 +70,7 @@ func SetupOTel(ctx context.Context, serviceName, endpoint string) (shutdown func
 	otel.SetTracerProvider(tp)
 	otel.SetMeterProvider(mp)
 
-	logExp, err := otlploggrpc.New(ctx,
-		otlploggrpc.WithEndpoint(endpoint),
-		otlploggrpc.WithInsecure(),
-	)
+	logExp, err := otlploghttp.New(ctx, otlploghttp.WithEndpointURL(target.JoinPath("v1/logs").String()))
 	if err != nil {
 		return nil, fmt.Errorf("dial otlp log exporter at %q: %w", endpoint, err)
 	}

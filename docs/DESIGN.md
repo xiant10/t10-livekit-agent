@@ -381,7 +381,7 @@ site has to remember to pass.
 
 | Level | ID | Lifetime | Comes from |
 |---|---|---|---|
-| Conversation | identity; `agentpi.session_id` | Across connections | Exists already |
+| Conversation | identity; `t10.session.id` | Across connections | Exists already |
 | Session | `session.id` / `session_id` = LiveKit participant SID | One connection | Both ends already know it |
 | Turn | `turn_id` = trace ID | One input through to the reply | Whichever end starts it |
 | Attempt | `request_id`, agent-pi `requestId` | One send | Span attributes, not used to group |

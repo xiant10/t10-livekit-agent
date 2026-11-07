@@ -56,7 +56,7 @@ services:
       # Overrides any OTEL_EXPORTER_OTLP_ENDPOINT in .env — the containerized
       # agent always reaches the collector by service name. See
       # internal/telemetry.SetupOTel and the otel-lgtm service below.
-      OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -81,7 +81,7 @@ services:
   # Unified OpenTelemetry observability backend: bundles OTel Collector,
   # Tempo (traces), Loki (logs), Prometheus/Mimir (metrics), and Grafana (UI)
   # in a single container. Both agent and client export traces, metrics, and
-  # logs to this single endpoint via OTLP/gRPC on :4317.
+  # logs to this single endpoint via OTLP/HTTP on :4318.
   otel-lgtm:
     image: grafana/otel-lgtm:latest
     container_name: t10-otel-lgtm

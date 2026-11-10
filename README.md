@@ -1,6 +1,21 @@
-# t10-agent
+# t10 LiveKit Agent
 
-A high-performance, real-time voice agent built in Go on top of [LiveKit](https://livekit.io). It orchestrates a modular **STT → LLM → TTS** pipeline supporting low-latency live calls with full-duplex audio, Voice Activity Detection (VAD), and responsive interruption/barge-in.
+A high-performance, real-time voice agent orchestration service built in Go on top of [LiveKit](https://livekit.io).
+
+## Project Description
+
+**t10 LiveKit Agent** orchestrates low-latency, full-duplex conversational voice sessions between human participants and AI agents. Connecting as a WebRTC participant in LiveKit rooms, it manages a modular streaming pipeline across Speech-to-Text (STT), Large Language Models (LLM), and Text-to-Speech (TTS), featuring responsive Voice Activity Detection (VAD) and immediate barge-in interruption.
+
+### Key Capabilities
+
+- **Three Modalities in One Room**:
+  - **Live Calls**: Real-time bidirectional WebRTC audio with streaming STT, LLM generation, sentence chunking, parallel TTS synthesis, and barge-in handling.
+  - **Voice Messages**: Single-turn audio message processing (inbound audio stream → outbound speech reply).
+  - **Text Chat**: Fast text messaging with streaming replies and synchronized conversation memory.
+- **Transport-Agnostic Engine**: `internal/engine` manages conversation history, turn taking, audio buffering, and barge-in state without WebRTC or LiveKit coupling.
+- **Pluggable Model Providers**: Clean interfaces for STT, LLM, and TTS with built-in adapters for Alibaba DashScope / Qwen Realtime and OpenAI-compatible endpoints.
+- **Sub-Second Barge-in**: Rapid cancellation of in-flight LLM/TTS generation and instant audio buffer clearing upon detected caller speech.
+- **Observability**: Context-propagated distributed tracing and metrics via OpenTelemetry.
 
 ---
 

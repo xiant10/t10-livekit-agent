@@ -23,6 +23,8 @@ const (
 	maxSnapshot    = 4 << 20
 	// instanceHeader names this process on the console's Fleet page.
 	instanceHeader = "T10-Router-Instance"
+	// staleAfter is the platform's one staleness budget for copies of control.
+	staleAfter = 15 * time.Minute
 )
 
 // routeSource answers which replica each session ID prefix means.
@@ -36,9 +38,14 @@ type ServiceTokens interface {
 }
 
 // routeControl follows t10-agent-control in the background, so a live call never
-// waits on it and survives it being down. The last good copy stays in memory.
+// waits on it and survives it being down. The last good copy is kept on disk too,
+// at cache, so a worker that restarts while control is down still finds sessions,
+// and it's kept with no time limit. Past staleAfter without an answer, each failed
+// read logs an error, which is what alerts. See "Reading control" in
+// t10-agent-control's docs/design.md.
 type routeControl struct {
 	url      string
+	cache    string
 	tokens   ServiceTokens
 	instance string
 	client   *http.Client
@@ -46,17 +53,78 @@ type routeControl struct {
 	mu       sync.Mutex
 	replicas map[string]string
 	etag     string
+	// reached is when control last answered, or when the copy on disk was saved.
+	reached time.Time
 }
 
-func newRouteControl(base string, tokens ServiceTokens) *routeControl {
+func newRouteControl(base, cache string, tokens ServiceTokens) *routeControl {
 	instance, err := os.Hostname()
 	if err != nil {
 		instance = "unknown"
 	}
-	return &routeControl{
-		url: strings.TrimRight(base, "/"), tokens: tokens, instance: instance,
+	c := &routeControl{
+		url: strings.TrimRight(base, "/"), cache: cache, tokens: tokens, instance: instance,
 		client: &http.Client{Timeout: controlTimeout}, replicas: map[string]string{},
 	}
+	c.loadCopy()
+	return c
+}
+
+// loadCopy starts from the copy on disk, aged from when it was saved.
+func (c *routeControl) loadCopy() {
+	if c.cache == "" {
+		return
+	}
+	raw, err := os.ReadFile(c.cache)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("saved routes can't be read", "file", c.cache, "error", err)
+		}
+		return
+	}
+	replicas, err := replicasOfRoutes(raw)
+	if err != nil {
+		slog.Warn("saved routes aren't valid", "file", c.cache, "error", err)
+		return
+	}
+	saved := time.Now()
+	if info, err := os.Stat(c.cache); err == nil {
+		saved = info.ModTime()
+	}
+	c.replicas, c.reached = replicas, saved
+	slog.Info("routes loaded from disk", "replicas", len(replicas))
+}
+
+// saveCopy replaces the copy on disk whole: written beside it, then renamed.
+func (c *routeControl) saveCopy(raw []byte) {
+	if c.cache == "" {
+		return
+	}
+	tmp := c.cache + ".tmp"
+	err := os.WriteFile(tmp, raw, 0o600)
+	if err == nil {
+		err = os.Rename(tmp, c.cache)
+	}
+	if err != nil {
+		slog.Warn("routes not saved", "file", c.cache, "error", err)
+	}
+}
+
+// failed logs a failed read: a warning while the copy is fresh, an error once
+// it's stale or there's none.
+func (c *routeControl) failed(err error) {
+	c.mu.Lock()
+	reached := c.reached
+	c.mu.Unlock()
+	if !reached.IsZero() && time.Since(reached) < staleAfter {
+		slog.Warn("routes unavailable, keeping the last good copy", "age", time.Since(reached).Round(time.Second), "error", err)
+		return
+	}
+	age := time.Duration(0)
+	if !reached.IsZero() {
+		age = time.Since(reached).Round(time.Second)
+	}
+	slog.Error("control feed stale", "feed", "routes", "age", age, "error", err)
 }
 
 func (c *routeControl) follow(ctx context.Context) {
@@ -64,7 +132,7 @@ func (c *routeControl) follow(ctx context.Context) {
 	defer ticker.Stop()
 	for {
 		if err := c.fetch(ctx); err != nil && ctx.Err() == nil {
-			slog.Warn("routes unavailable, keeping the last good copy", "error", err)
+			c.failed(err)
 		}
 		select {
 		case <-ctx.Done():
@@ -97,6 +165,9 @@ func (c *routeControl) fetch(ctx context.Context) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotModified {
+		c.mu.Lock()
+		c.reached = time.Now()
+		c.mu.Unlock()
 		return nil
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -111,8 +182,9 @@ func (c *routeControl) fetch(ctx context.Context) error {
 		return err
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.replicas, c.etag = replicas, resp.Header.Get("ETag")
+	c.replicas, c.etag, c.reached = replicas, resp.Header.Get("ETag"), time.Now()
+	c.mu.Unlock()
+	c.saveCopy(raw)
 	return nil
 }
 

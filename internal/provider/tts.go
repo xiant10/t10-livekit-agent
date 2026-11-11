@@ -18,5 +18,7 @@ type StreamingTTS interface {
 	SynthesizeStream(ctx context.Context, text, voice string, onAudio func(pcm []byte, sampleRate int)) error
 	// Warm starts preparing a connection for a synthesis expected shortly and
 	// returns at once. It is only a hint: nothing fails if it is never used.
-	Warm(voice string)
+	// ctx is the call's: a session warmed for one call, with its tenant's
+	// key, never serves another.
+	Warm(ctx context.Context, voice string)
 }

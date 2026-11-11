@@ -86,6 +86,13 @@ type Config struct {
 	AuthClientID     string
 	AuthClientSecret string
 
+	// SpeechURL sends speech through ai-gateway-llm's realtime proxy, such as
+	// ws://ai-gateway-llm:18080/v1/audio/realtime, in place of DashScope, so a
+	// tenant's own speech key can pay for its calls. SpeechAPIKey is this
+	// worker's client key there. Each socket carries the call's run token.
+	SpeechURL    string
+	SpeechAPIKey string
+
 	RedisURL          string
 	VoiceMaxCalls     int
 	VoiceDrainSeconds int
@@ -155,6 +162,8 @@ func Load() Config {
 		LLMProvider: getenv("LLM_PROVIDER", "openai_compat"),
 		TTSProvider: getenv("TTS_PROVIDER", "qwen"),
 
+		SpeechURL:       getenv("SPEECH_URL", ""),
+		SpeechAPIKey:    getenv("SPEECH_API_KEY", ""),
 		DashScopeAPIKey: getenv("DASHSCOPE_API_KEY", ""),
 		DashScopeWSURL:  getenv("DASHSCOPE_WS_URL", "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"),
 		QwenSTTModel:    getenv("QWEN_STT_MODEL", "qwen3-asr-flash-realtime"),

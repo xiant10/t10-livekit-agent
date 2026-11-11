@@ -1,6 +1,8 @@
 package qwen
 
 import (
+	"t10-livekit-agent/internal/provider"
+
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -69,7 +71,7 @@ func newFakeTTS(t *testing.T, f *fakeRealtime) *TTS {
 	t.Helper()
 	server := httptest.NewServer(f)
 	t.Cleanup(server.Close)
-	return &TTS{wsURL: "ws" + strings.TrimPrefix(server.URL, "http"), apiKey: "k", model: "m", defaultVoice: "Cherry"}
+	return &TTS{route: route{wsURL: "ws" + strings.TrimPrefix(server.URL, "http"), apiKey: "k"}, model: "m", defaultVoice: "Cherry"}
 }
 
 func TestSynthesizeStreamDeliversAudioBeforeTheResponseEnds(t *testing.T) {
@@ -126,8 +128,8 @@ func TestSynthesizeKeepsSamplesWholeAcrossDeltas(t *testing.T) {
 func TestWarmSessionIsUsedOnceAndNotDialledTwice(t *testing.T) {
 	f := &fakeRealtime{deltas: [][]byte{{1, 0}}}
 	tts := newFakeTTS(t, f)
-	tts.Warm("")
-	tts.Warm("") // a second turn starting before the first spare is used
+	tts.Warm(context.Background(), "")
+	tts.Warm(context.Background(), "") // a second turn starting before the first spare is used
 	if _, _, err := tts.Synthesize(context.Background(), "你好", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +147,7 @@ func TestWarmSessionIsUsedOnceAndNotDialledTwice(t *testing.T) {
 func TestDeadSpareFallsBackToAFreshSession(t *testing.T) {
 	f := &fakeRealtime{deltas: [][]byte{{1, 0}}, failFirst: true}
 	tts := newFakeTTS(t, f)
-	tts.Warm("")
+	tts.Warm(context.Background(), "")
 	pcm, _, err := tts.Synthesize(context.Background(), "你好", "")
 	if err != nil || len(pcm) != 2 {
 		t.Fatalf("pcm=%v err=%v", pcm, err)
@@ -158,12 +160,26 @@ func TestDeadSpareFallsBackToAFreshSession(t *testing.T) {
 func TestSpareForAnotherVoiceIsNotUsed(t *testing.T) {
 	f := &fakeRealtime{deltas: [][]byte{{1, 0}}}
 	tts := newFakeTTS(t, f)
-	tts.Warm("Serena")
+	tts.Warm(context.Background(), "Serena")
 	if _, _, err := tts.Synthesize(context.Background(), "你好", "Cherry"); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.dials.Load(); got != 2 {
 		t.Fatalf("dials = %d", got)
+	}
+}
+
+// Through the gateway a spare's key is its call's tenant's, so a spare opened
+// for one call never serves another.
+func TestSpareForAnotherCallIsNotUsed(t *testing.T) {
+	f := &fakeRealtime{deltas: [][]byte{{1, 0}}}
+	tts := newFakeTTS(t, f)
+	tts.Warm(provider.WithGrant(context.Background(), "grt_acme"), "")
+	if _, _, err := tts.Synthesize(provider.WithGrant(context.Background(), "grt_globex"), "你好", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.dials.Load(); got != 2 {
+		t.Fatalf("dials = %d: another call's spare was used", got)
 	}
 }
 

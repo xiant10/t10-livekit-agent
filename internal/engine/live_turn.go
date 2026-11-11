@@ -724,7 +724,7 @@ func (l *LiveCallController) handleTurn(transcripts []string, sink AudioSink, ve
 	// Opening a provider session costs about as long as the model takes to
 	// reach its first chunk, so run the two side by side.
 	if tts, ok := l.deps.TTS.(provider.StreamingTTS); ok {
-		tts.Warm(l.deps.Voice)
+		tts.Warm(ctx, l.deps.Voice)
 	}
 
 	convo := l.deps.Conversations.Get(l.identity)

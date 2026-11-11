@@ -105,7 +105,8 @@ func TestRouteControlKeepsTheLastGoodCopy(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := newRouteControl(server.URL, fixedServiceToken("service"))
+	cache := filepath.Join(t.TempDir(), "routes.json")
+	c := newRouteControl(server.URL, cache, fixedServiceToken("service"))
 	ctx := context.Background()
 	if err := c.fetch(ctx); err != nil {
 		t.Fatal(err)
@@ -123,6 +124,10 @@ func TestRouteControlKeepsTheLastGoodCopy(t *testing.T) {
 	}
 	if got := c.current()["sales.r0"]; got == "" {
 		t.Fatal("an outage lost the routes, which would drop live calls")
+	}
+	// A worker that restarts during the outage starts from its copy on disk.
+	if got := newRouteControl(server.URL, cache, fixedServiceToken("service")).current()["sales.r0"]; got != "http://a:9810/agent" {
+		t.Fatalf("after a restart during an outage: %q", got)
 	}
 
 	// A bad document needs a new ETag to arrive at all, so start from none.

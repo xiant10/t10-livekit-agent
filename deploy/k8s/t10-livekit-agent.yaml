@@ -52,6 +52,10 @@ spec:
               value: "600"
             - name: VOICE_MAX_CALLS
               value: "0"
+            # The last routes from t10-agent-control, used when AGENT_CONTROL_URL is
+            # set. On an emptyDir it outlives a crashed container, not a new pod.
+            - name: AGENT_CONTROL_CACHE
+              value: /var/cache/t10-livekit-agent/routes.json
           envFrom:
             - secretRef:
                 name: t10-livekit-agent
@@ -60,3 +64,10 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          volumeMounts:
+            - name: control
+              mountPath: /var/cache/t10-livekit-agent
+      volumes:
+        - name: control
+          emptyDir:
+            sizeLimit: 16Mi

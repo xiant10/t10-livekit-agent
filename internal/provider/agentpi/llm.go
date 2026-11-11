@@ -43,7 +43,7 @@ func init() {
 		if err != nil {
 			return nil, err
 		}
-		return New(Options{URL: cfg.AgentPiURL, Replicas: replicas, RoutesFile: cfg.AgentRoutesFile, ControlURL: cfg.AgentControlURL, ServiceTokens: tokens, Tokens: tokens, Profile: cfg.AgentPiProfile, WhenBusy: cfg.AgentPiWhenBusy})
+		return New(Options{URL: cfg.AgentPiURL, Replicas: replicas, RoutesFile: cfg.AgentRoutesFile, ControlURL: cfg.AgentControlURL, ControlCache: cfg.AgentControlCache, ServiceTokens: tokens, Tokens: tokens, Profile: cfg.AgentPiProfile, WhenBusy: cfg.AgentPiWhenBusy})
 	})
 }
 
@@ -91,7 +91,10 @@ type Options struct {
 	RoutesFile string
 	// ControlURL is t10-agent-control, followed in the background. When set,
 	// RoutesFile and Replicas aren't read. ServiceTokens signs in to it.
-	ControlURL    string
+	ControlURL string
+	// ControlCache is the file the last routes from control are kept in. Empty
+	// keeps them in memory only.
+	ControlCache  string
 	ServiceTokens ServiceTokens
 	Tokens        TokenSource
 	Profile       string
@@ -151,7 +154,7 @@ func New(opts Options) (*LLM, error) {
 	// legitimately outlast it. The idle watchdog in follow bounds the stream.
 	var routes routeSource
 	if opts.ControlURL != "" {
-		followed := newRouteControl(opts.ControlURL, opts.ServiceTokens)
+		followed := newRouteControl(opts.ControlURL, opts.ControlCache, opts.ServiceTokens)
 		go followed.follow(context.Background())
 		routes = followed
 	} else if opts.RoutesFile != "" {

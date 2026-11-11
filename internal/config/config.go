@@ -74,8 +74,11 @@ type Config struct {
 	// AgentControlURL is t10-agent-control. When set, AgentRoutesFile and AgentURLs
 	// aren't read.
 	AgentControlURL string
-	AgentPiProfile  string
-	AgentPiWhenBusy string
+	// AgentControlCache keeps the last routes from control, so a worker that
+	// restarts while control is down still finds sessions.
+	AgentControlCache string
+	AgentPiProfile    string
+	AgentPiWhenBusy   string
 
 	// Auth service credentials, which turn each caller's agent grant into a
 	// token for agent-pi.
@@ -162,12 +165,13 @@ func Load() Config {
 		OpenAIAPIKey:  getenv("OPENAI_API_KEY", ""),
 		OpenAIModel:   getenv("OPENAI_MODEL", "qwen-plus"),
 
-		AgentPiURL:      getenv("AGENT_PI_URL", "http://localhost:9800/agent"),
-		AgentURLs:       getenv("AGENT_URLS", ""),
-		AgentRoutesFile: getenv("AGENT_ROUTES_FILE", ""),
-		AgentControlURL: getenv("AGENT_CONTROL_URL", ""),
-		AgentPiProfile:  getenv("AGENT_PI_PROFILE", "voice"),
-		AgentPiWhenBusy: getenv("AGENT_PI_WHEN_BUSY", "auto"),
+		AgentPiURL:        getenv("AGENT_PI_URL", "http://localhost:9800/agent"),
+		AgentURLs:         getenv("AGENT_URLS", ""),
+		AgentRoutesFile:   getenv("AGENT_ROUTES_FILE", ""),
+		AgentControlURL:   getenv("AGENT_CONTROL_URL", ""),
+		AgentControlCache: getenv("AGENT_CONTROL_CACHE", ""),
+		AgentPiProfile:    getenv("AGENT_PI_PROFILE", "voice"),
+		AgentPiWhenBusy:   getenv("AGENT_PI_WHEN_BUSY", "auto"),
 
 		AuthURL:          getenv("AUTH_URL", "http://localhost:8081"),
 		AuthClientID:     getenv("AUTH_CLIENT_ID", "t10-livekit-agent"),

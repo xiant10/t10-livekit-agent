@@ -19,15 +19,11 @@ import (
 
 func init() {
 	provider.RegisterTTS("qwen", func(cfg config.Config) (provider.TTSProvider, error) {
-		if cfg.DashScopeAPIKey == "" {
-			return nil, fmt.Errorf("qwen: DASHSCOPE_API_KEY is required")
+		r, err := newRoute(cfg, "tts")
+		if err != nil {
+			return nil, err
 		}
-		return &TTS{
-			wsURL:        cfg.DashScopeWSURL,
-			apiKey:       cfg.DashScopeAPIKey,
-			model:        cfg.QwenTTSModel,
-			defaultVoice: cfg.QwenTTSVoice,
-		}, nil
+		return &TTS{route: r, model: cfg.QwenTTSModel, defaultVoice: cfg.QwenTTSVoice}, nil
 	})
 }
 
@@ -47,8 +43,7 @@ const (
 // synthesis API. Like STT, each synthesis uses its own WebSocket connection,
 // but because opening one costs ~850ms, Warm can open it ahead of time.
 type TTS struct {
-	wsURL        string
-	apiKey       string
+	route        route
 	model        string
 	defaultVoice string
 
@@ -59,7 +54,10 @@ type TTS struct {
 // ttsSpare is a session opened by Warm. Its client and err are set before
 // ready closes.
 type ttsSpare struct {
-	voice  string
+	voice string
+	// grant is the call it was opened for: through the gateway its key is
+	// that call's tenant's, so it serves no other call.
+	grant  string
 	ready  chan struct{}
 	client *realtimeClient
 	err    error
@@ -85,7 +83,7 @@ func sanitizeForSpeech(text string) string {
 
 // open dials a connection and configures it for voice.
 func (p *TTS) open(ctx context.Context, voice string) (*realtimeClient, error) {
-	client, err := dialRealtime(ctx, p.wsURL, p.model, p.apiKey)
+	client, err := p.route.dial(ctx, p.model)
 	if err != nil {
 		return nil, err
 	}
@@ -116,20 +114,21 @@ func (p *TTS) open(ctx context.Context, voice string) (*realtimeClient, error) {
 // ready. It runs alongside the LLM, which usually takes longer than this does.
 // The spare is not tied to any turn: one left behind by a barge-in serves the
 // next turn, and an unused one closes itself after ttsSpareMaxAge.
-func (p *TTS) Warm(voice string) {
+func (p *TTS) Warm(ctx context.Context, voice string) {
 	if voice == "" {
 		voice = p.defaultVoice
 	}
+	grant := provider.GrantFrom(ctx)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.spare != nil {
-		if p.spare.voice == voice {
+		if p.spare.voice == voice && p.spare.grant == grant {
 			return
 		}
 		p.spare.expire.Stop()
 		p.spare.discard()
 	}
-	s := &ttsSpare{voice: voice, ready: make(chan struct{})}
+	s := &ttsSpare{voice: voice, grant: grant, ready: make(chan struct{})}
 	p.spare = s
 	s.expire = time.AfterFunc(ttsSpareMaxAge, func() {
 		p.mu.Lock()
@@ -141,18 +140,20 @@ func (p *TTS) Warm(voice string) {
 	})
 	go func() {
 		defer close(s.ready)
-		ctx, cancel := context.WithTimeout(context.Background(), ttsSpareSetupTimeout)
+		// The call's values, its grant among them, without its deadline.
+		open, cancel := context.WithTimeout(context.WithoutCancel(ctx), ttsSpareSetupTimeout)
 		defer cancel()
-		s.client, s.err = p.open(ctx, voice)
+		s.client, s.err = p.open(open, voice)
 	}()
 }
 
-// takeSpare hands over the spare session for voice, if there is one.
-func (p *TTS) takeSpare(voice string) *ttsSpare {
+// takeSpare hands over the spare session for voice and this call, if there
+// is one.
+func (p *TTS) takeSpare(voice, grant string) *ttsSpare {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	s := p.spare
-	if s == nil || s.voice != voice {
+	if s == nil || s.voice != voice || s.grant != grant {
 		return nil
 	}
 	s.expire.Stop()
@@ -163,7 +164,7 @@ func (p *TTS) takeSpare(voice string) *ttsSpare {
 // acquire returns a session for voice and whether it was a spare. A spare still
 // opening is waited for, since it can only be closer to ready than a new one.
 func (p *TTS) acquire(ctx context.Context, voice string) (*realtimeClient, bool, error) {
-	if s := p.takeSpare(voice); s != nil {
+	if s := p.takeSpare(voice, provider.GrantFrom(ctx)); s != nil {
 		select {
 		case <-s.ready:
 			if s.err == nil {

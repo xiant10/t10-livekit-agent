@@ -13,7 +13,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/http"
-	"strings"
+	"net/url"
 	"time"
 
 	"github.com/coder/websocket"
@@ -43,11 +43,19 @@ type realtimeClient struct {
 	events chan realtimeEvent
 }
 
-func dialRealtime(ctx context.Context, baseURL, model, apiKey string) (*realtimeClient, error) {
-	u, _, _ := strings.Cut(baseURL, "?")
-	u = u + "?model=" + model
+func dialRealtime(ctx context.Context, baseURL, model, apiKey string, header http.Header) (*realtimeClient, error) {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("qwen: speech URL: %w", err)
+	}
+	q := parsed.Query()
+	q.Set("model", model)
+	parsed.RawQuery = q.Encode()
+	u := parsed.String()
 
-	header := http.Header{}
+	if header == nil {
+		header = http.Header{}
+	}
 	header.Set("Authorization", "Bearer "+apiKey)
 	header.Set("User-Agent", "t10-livekit-agent-go/0.1")
 

@@ -30,7 +30,7 @@ func (f *streamingTTS) Synthesize(context.Context, string, string) ([]byte, int,
 	panic("a streaming provider should be streamed from")
 }
 
-func (f *streamingTTS) Warm(voice string) { f.warmed <- voice }
+func (f *streamingTTS) Warm(_ context.Context, voice string) { f.warmed <- voice }
 
 func (f *streamingTTS) SynthesizeStream(ctx context.Context, _, _ string, onAudio func([]byte, int)) error {
 	for {

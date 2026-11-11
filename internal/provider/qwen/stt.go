@@ -14,14 +14,11 @@ import (
 
 func init() {
 	provider.RegisterSTT("qwen", func(cfg config.Config) (provider.STTProvider, error) {
-		if cfg.DashScopeAPIKey == "" {
-			return nil, fmt.Errorf("qwen: DASHSCOPE_API_KEY is required")
+		r, err := newRoute(cfg, "stt")
+		if err != nil {
+			return nil, err
 		}
-		return &STT{
-			wsURL:  cfg.DashScopeWSURL,
-			apiKey: cfg.DashScopeAPIKey,
-			model:  cfg.QwenSTTModel,
-		}, nil
+		return &STT{route: r, model: cfg.QwenSTTModel}, nil
 	})
 }
 
@@ -31,9 +28,8 @@ func init() {
 // Python original's persistent shared-connection pool, at the cost of one
 // extra handshake per turn.
 type STT struct {
-	wsURL  string
-	apiKey string
-	model  string
+	route route
+	model string
 }
 
 const sttResultTimeout = 10 * time.Second
@@ -60,7 +56,7 @@ func (p *STT) TranscribeBatch(ctx context.Context, pcm16Mono16k []byte, lang str
 		return "", nil
 	}
 
-	client, err := dialRealtime(ctx, p.wsURL, p.model, p.apiKey)
+	client, err := p.route.dial(ctx, p.model)
 	if err != nil {
 		return "", err
 	}
@@ -184,7 +180,7 @@ func (p *STT) NewStream(ctx context.Context, lang string, onInterim func(delta s
 func (s *stream) dial(ctx context.Context, p *STT, lang string) {
 	defer close(s.readyCh)
 
-	client, err := dialRealtime(ctx, p.wsURL, p.model, p.apiKey)
+	client, err := p.route.dial(ctx, p.model)
 	if err != nil {
 		s.dialErr = err
 		close(s.senderDone)

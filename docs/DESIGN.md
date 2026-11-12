@@ -114,6 +114,15 @@ Qwen (via DashScope's compatible-mode endpoint) to real OpenAI, Doubao, or
 DeepSeek is a three-line `.env` change (`OPENAI_BASE_URL`/`OPENAI_API_KEY`/
 `OPENAI_MODEL`), not a code change at all.
 
+`STT_PROVIDER=openai` (`internal/provider/openaispeech`) transcribes live
+calls over OpenAI's Realtime transcription socket, so captions appear while
+the caller is still talking. The endpoint only transcribes a segment once it
+is committed, and its own VAD commits only at pauses, so the stream turns
+that VAD off and commits itself: after 1.5s of audio at the next quiet moment,
+or at 4s regardless. Segments are transcribed independently and joined. If the
+socket can't open or fails, `Commit` falls back to one `/audio/transcriptions`
+request for the whole utterance.
+
 **Transport** — swap LiveKit for something else (a raw WebSocket server, a
 Twilio Media Stream, a different WebRTC SFU) by implementing three small
 interfaces:

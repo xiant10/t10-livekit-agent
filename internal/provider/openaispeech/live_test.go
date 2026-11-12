@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -55,13 +56,30 @@ func TestLiveRoundTrip(t *testing.T) {
 		t.Errorf("transcript %q", got)
 	}
 
-	s, _ := stt.NewStream(ctx, "en", nil)
+	// Feed the audio at real-time pace, as the live call does, and note when
+	// captions show up: they must arrive before Commit, or the socket was not used.
+	start = time.Now()
+	var interims []string
+	var mu sync.Mutex
+	s, _ := stt.NewStream(ctx, "en", func(snap string) {
+		mu.Lock()
+		interims = append(interims, snap)
+		mu.Unlock()
+		t.Logf("  interim +%v: %q", time.Since(start).Round(time.Millisecond), snap)
+	})
 	for i := 0; i < len(pcm16k); i += 640 {
 		s.PushPCM(pcm16k[i:min(i+640, len(pcm16k))])
+		time.Sleep(20 * time.Millisecond)
 	}
+	mu.Lock()
+	before := len(interims)
+	mu.Unlock()
 	got2, err := s.Commit(ctx)
 	if err != nil || !strings.Contains(strings.ToLower(got2), "lazy dog") {
 		t.Errorf("stream: %q, %v", got2, err)
 	}
-	t.Logf("stt stream: %q", got2)
+	t.Logf("stt stream: %q (%d interims before commit, commit took %v after speech ended)", got2, before, time.Since(start))
+	if before == 0 {
+		t.Error("no interim text arrived while audio was still being pushed")
+	}
 }

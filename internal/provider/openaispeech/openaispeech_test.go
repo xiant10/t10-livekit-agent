@@ -54,6 +54,10 @@ func TestTranscribeBatch(t *testing.T) {
 func TestStreamCommitAndAbort(t *testing.T) {
 	var bytesSeen int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/audio/transcriptions" { // no realtime socket here: the stream must fall back
+			http.NotFound(w, r)
+			return
+		}
 		r.ParseMultipartForm(1 << 20)
 		f, _, _ := r.FormFile("file")
 		b := make([]byte, 1<<16)

@@ -2,9 +2,10 @@
 // provider.TTSProvider against OpenAI's audio endpoints (or any server that
 // speaks the same API): /audio/transcriptions and /audio/speech.
 //
-// Neither endpoint is a duplex socket, so STT streams buffer the utterance
-// and transcribe it on Commit, with no interim captions. TTS does stream: the
-// raw PCM response body is handed to the caller as it arrives.
+// Batch STT uses the endpoint; live STT streams audio over the Realtime
+// transcription socket (stream.go) for interim captions, and falls back to the
+// endpoint if the socket is unavailable. TTS streams: the raw PCM response
+// body is handed to the caller as it arrives.
 package openaispeech
 
 import (
@@ -17,8 +18,6 @@ import (
 	"net/http"
 	"net/textproto"
 	"strings"
-	"sync"
-	"time"
 
 	"t10-livekit-agent/internal/audio"
 	"t10-livekit-agent/internal/config"
@@ -142,47 +141,24 @@ func (p *STT) TranscribeBatch(ctx context.Context, pcm16Mono16k []byte, lang str
 	return strings.TrimSpace(out.Text), nil
 }
 
-// NewStream buffers pushed audio and transcribes it in one request on Commit.
-// onInterim is never called: the endpoint has no partial results.
+// NewStream opens a Realtime transcription socket so onInterim can show the
+// words while the user is still talking (see rtStream). It returns at once;
+// the socket opens in the background while audio is already being buffered.
+// Without one, Commit transcribes the whole utterance in a single request.
 func (p *STT) NewStream(ctx context.Context, lang string, onInterim func(snapshot string)) (provider.STTStream, error) {
-	return &sttStream{stt: p, lang: lang}, nil
-}
-
-type sttStream struct {
-	stt  *STT
-	lang string
-
-	mu      sync.Mutex
-	pcm     []byte
-	aborted bool
-}
-
-func (s *sttStream) PushPCM(pcm []byte) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.aborted {
-		s.pcm = append(s.pcm, pcm...)
+	s := &rtStream{
+		stt:        p,
+		lang:       lang,
+		onInterim:  onInterim,
+		notify:     make(chan struct{}, 1),
+		stop:       make(chan struct{}),
+		ready:      make(chan struct{}),
+		senderDone: make(chan struct{}),
+		items:      map[string]*item{},
+		changed:    make(chan struct{}, 1),
 	}
-}
-
-func (s *sttStream) Commit(ctx context.Context) (string, error) {
-	s.mu.Lock()
-	pcm, aborted := s.pcm, s.aborted
-	s.pcm = nil
-	s.mu.Unlock()
-	if aborted {
-		return "", context.Canceled
-	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	return s.stt.TranscribeBatch(ctx, pcm, s.lang)
-}
-
-func (s *sttStream) Abort() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.aborted = true
-	s.pcm = nil
+	go s.dial(ctx)
+	return s, nil
 }
 
 // TTS is a provider.StreamingTTS backed by /audio/speech.

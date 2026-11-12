@@ -87,6 +87,8 @@ type Config struct {
 	AgentControlCache string
 	AgentPiProfile    string
 	AgentPiWhenBusy   string
+	// AgentPiSpeakProgress says the agent's acknowledgement before its answer.
+	AgentPiSpeakProgress bool
 
 	// Auth service credentials, which turn each caller's agent grant into a
 	// token for agent-pi.
@@ -188,13 +190,14 @@ func Load() Config {
 		OpenAIAPIKey:  getenv("OPENAI_API_KEY", ""),
 		OpenAIModel:   getenv("OPENAI_MODEL", "qwen-plus"),
 
-		AgentPiURL:        getenv("AGENT_PI_URL", "http://localhost:9800/agent"),
-		AgentURLs:         getenv("AGENT_URLS", ""),
-		AgentRoutesFile:   getenv("AGENT_ROUTES_FILE", ""),
-		AgentControlURL:   getenv("AGENT_CONTROL_URL", ""),
-		AgentControlCache: getenv("AGENT_CONTROL_CACHE", ""),
-		AgentPiProfile:    getenv("AGENT_PI_PROFILE", "voice"),
-		AgentPiWhenBusy:   getenv("AGENT_PI_WHEN_BUSY", "auto"),
+		AgentPiURL:           getenv("AGENT_PI_URL", "http://localhost:9800/agent"),
+		AgentURLs:            getenv("AGENT_URLS", ""),
+		AgentRoutesFile:      getenv("AGENT_ROUTES_FILE", ""),
+		AgentControlURL:      getenv("AGENT_CONTROL_URL", ""),
+		AgentControlCache:    getenv("AGENT_CONTROL_CACHE", ""),
+		AgentPiProfile:       getenv("AGENT_PI_PROFILE", "voice"),
+		AgentPiWhenBusy:      getenv("AGENT_PI_WHEN_BUSY", "auto"),
+		AgentPiSpeakProgress: getenv("AGENT_PI_SPEAK_PROGRESS", "true") != "false",
 
 		AuthURL:          getenv("AUTH_URL", "http://localhost:8081"),
 		AuthClientID:     getenv("AUTH_CLIENT_ID", "t10-livekit-agent"),

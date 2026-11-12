@@ -43,7 +43,7 @@ func init() {
 		if err != nil {
 			return nil, err
 		}
-		return New(Options{URL: cfg.AgentPiURL, Replicas: replicas, RoutesFile: cfg.AgentRoutesFile, ControlURL: cfg.AgentControlURL, ControlCache: cfg.AgentControlCache, ServiceTokens: tokens, Tokens: tokens, Profile: cfg.AgentPiProfile, WhenBusy: cfg.AgentPiWhenBusy})
+		return New(Options{URL: cfg.AgentPiURL, Replicas: replicas, RoutesFile: cfg.AgentRoutesFile, ControlURL: cfg.AgentControlURL, ControlCache: cfg.AgentControlCache, ServiceTokens: tokens, Tokens: tokens, Profile: cfg.AgentPiProfile, WhenBusy: cfg.AgentPiWhenBusy, SpeakProgress: cfg.AgentPiSpeakProgress})
 	})
 }
 
@@ -72,7 +72,10 @@ const (
 	// messages in the conversation aren't bound by it.
 	spokenNote = "This message was said on a live call, and your reply to it is read aloud as you write it. " +
 		"Answer it in one to three short sentences. Use plain sentences with no markdown, lists, tables, URLs or code. " +
-		"Say numbers, dates and times the way a person would. Answer in the language they are speaking."
+		"Say numbers, dates and times the way a person would. Answer in the language they are speaking. " +
+		// Not "don't say what you're about to do": qwen3.5-flash then said it
+		// instead of calling the tool in 4 of 15 turns, some with made-up results.
+		"If the answer needs a tool, call it before you say anything, then answer from its result."
 )
 
 // TokenSource turns the grant on a turn into a token for agent-pi. Tokens last
@@ -99,6 +102,10 @@ type Options struct {
 	Tokens        TokenSource
 	Profile       string
 	WhenBusy      string
+
+	// SpeakProgress says the agent's acknowledgement ahead of its reply, and a
+	// short "still working" when a run goes quiet (docs/AGENT-PI-PROVIDER.md).
+	SpeakProgress bool
 
 	AdmissionTimeout time.Duration
 	IdleTimeout      time.Duration
@@ -192,6 +199,7 @@ func (l *LLM) ChatStream(ctx context.Context, msgs []provider.Message, onToken f
 	c, err := l.admit(ctx, s, input, note)
 	if err == nil {
 		s.sent = cursor
+		c.chinese = hasHan(input)
 	}
 	s.mu.Unlock()
 	if err != nil {
@@ -214,6 +222,9 @@ func (l *LLM) ChatStream(ctx context.Context, msgs []provider.Message, onToken f
 	}
 	if err == nil {
 		c, err = l.admit(ctx, s, input, note)
+	}
+	if err == nil {
+		c.chinese = hasHan(input)
 	}
 	s.mu.Unlock()
 	if err != nil {

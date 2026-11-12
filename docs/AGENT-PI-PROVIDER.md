@@ -390,6 +390,19 @@ Each `ChatStream` call handles one POST and needs no shared demultiplexer:
 Errors: non-200 at admission becomes an error (including 429 and 409), with the
 404 retry above; `unanswered` with a reason becomes an error carrying `detail`.
 
+### Acknowledgements
+
+An agent with acknowledgements on (agent-ti's `progress`, agent-pi's `progressModel`) sends `progress` events while a run starts: `working` with one sentence saying what it will do, `waiting` once after a quiet stretch, and `finished`. With `AGENT_PI_SPEAK_PROGRESS` (default `true`), the stream reader turns them into speech by putting them in the reply's own token stream:
+
+- `working` is said once, ahead of the reply, made into a finished sentence so the sentence splitter speaks it at once. It is said only for this call's submission, and only before any of the reply has arrived: once the answer has begun, it is old news.
+- `waiting` repeats the acknowledgement's text, so the worker says a short filler of its own instead, once: "Still working on it." or 还在处理，请稍等。, in Chinese when the caller spoke Chinese.
+- Neither counts as the reply: a result whose text came with no deltas (a plugin's answer, or one a resync skipped) is still delivered after them.
+
+- Models often open a tool call with their own preamble ("I'll check your work items for you."), whatever their instructions say, which would repeat the acknowledgement. So after one is said, the reply's first message is held for up to 1.5 s, about as long as the acknowledgement takes to say: if it ends as text before a tool call (`message.end` with `stopReason: "toolUse"`, or a tool starting), it is dropped; otherwise it is said whole. Without an acknowledgement, the preamble is the only feedback and is said as before.
+- Every call turn's note asks the model to call a tool it needs before saying anything. An earlier note told it not to open with what it was about to do: qwen3.5-flash then said that instead of calling the tool in 4 of 15 replayed turns, and some of those replies made up the results. The preamble hold, not the note, is what keeps the acknowledgement from being said twice.
+
+Being part of the token stream, they are captioned like the reply and included in what the caller heard if they barge in.
+
 ### Cancellation and transport
 
 Cancelling `ctx` closes this call's stream and nothing else. The run continues

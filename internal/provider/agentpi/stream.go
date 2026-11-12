@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"go.opentelemetry.io/otel/attribute"
 
@@ -26,6 +28,12 @@ var (
 	errIdle      = errors.New("agentpi: stream went silent")
 )
 
+// preambleHold is how long, after an acknowledgement, the reply's first text is
+// held to see whether it is only a preamble before a tool call ("I'll check that
+// for you."), which would say the acknowledgement again. About as long as the
+// acknowledgement takes to say, so a real answer held this long isn't heard later.
+var preambleHold = 1500 * time.Millisecond
+
 // call is one submission's stream. Every stream receives every session event,
 // so a call decides for itself what is its own: it owns the output from the
 // moment its input is placed until a newer input is placed or its result
@@ -35,18 +43,26 @@ type call struct {
 	mine       int64 // 0 when a plugin answered: there is no submission to follow
 	admittedAt time.Time
 
+	// chinese: the caller spoke Chinese, so a filler of this worker's own is said in Chinese.
+	chinese bool
+
 	mu        sync.Mutex
 	delivered strings.Builder
-	closed    bool
+	// answered: some of the agent's own reply was delivered, not only its status.
+	answered bool
+	closed   bool
 }
 
 // event is the part of a session/event notification this client reads.
 type event struct {
-	Type         string `json:"type"`
-	Text         string `json:"text"`
-	SubmissionID int64  `json:"submissionId"`
-	Status       string `json:"status"`
-	Inbox        []struct {
+	Type          string  `json:"type"`
+	Text          string  `json:"text"`
+	SubmissionID  int64   `json:"submissionId"`
+	SubmissionIDs []int64 `json:"submissionIds"`
+	Phase         string  `json:"phase"`
+	StopReason    string  `json:"stopReason"`
+	Status        string  `json:"status"`
+	Inbox         []struct {
 		ID int64 `json:"id"`
 	} `json:"inbox"`
 }
@@ -85,10 +101,71 @@ func (c *call) text() string {
 func (c *call) deliver(delta string, onToken func(string)) {
 	c.mu.Lock()
 	c.delivered.WriteString(delta)
+	c.answered = true
 	c.mu.Unlock()
 	if onToken != nil {
 		onToken(delta)
 	}
+}
+
+func (c *call) hasAnswer() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.answered
+}
+
+// say delivers a status sentence of the agent's or this worker's own: spoken
+// ahead of the reply like any of its text, but not counted as the reply.
+func (c *call) say(sentence string, onToken func(string)) {
+	c.mu.Lock()
+	// Chinese runs on without spaces; other languages need one between sentences.
+	if c.delivered.Len() > 0 && !strings.HasSuffix(c.delivered.String(), " ") && !hasHan(sentence) {
+		sentence = " " + sentence
+	}
+	c.delivered.WriteString(sentence)
+	c.mu.Unlock()
+	if onToken != nil {
+		onToken(sentence)
+	}
+}
+
+// spoken makes an acknowledgement one finished sentence, so the speech
+// pipeline says it at once instead of waiting for the reply to complete it.
+func spoken(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	last := []rune(text)[len([]rune(text))-1]
+	switch {
+	case strings.ContainsRune(".!?。！？…", last):
+	case hasHan(text):
+		text += "。"
+	default:
+		text += "."
+	}
+	if !hasHan(text) {
+		text += " "
+	}
+	return text
+}
+
+func hasHan(text string) bool {
+	for _, r := range text {
+		if unicode.Is(unicode.Han, r) {
+			return true
+		}
+	}
+	return false
+}
+
+// stillWorking is said once when a run goes quiet for a while (a progress
+// event's "waiting" phase), in the caller's language.
+func stillWorking(chinese bool) string {
+	if chinese {
+		return "还在处理，请稍等。"
+	}
+	return "Still working on it. "
 }
 
 // follow reads the stream to its end and returns the concatenated deltas, not
@@ -118,6 +195,20 @@ func (c *call) follow(ctx context.Context, opts Options, onToken func(string)) (
 	}()
 
 	owner, settled := false, false
+	// A run's acknowledgement and its "still working" are each said once.
+	acknowledged, waited := false, false
+	// After an acknowledgement, the reply's first message is held until it shows
+	// whether it is a preamble to a tool call (dropped) or the answer (said).
+	var held strings.Builder
+	var holdUntil time.Time
+	holding := func() bool { return !holdUntil.IsZero() }
+	release := func(say bool) {
+		if say && held.Len() > 0 {
+			c.deliver(held.String(), onToken)
+		}
+		held.Reset()
+		holdUntil = time.Time{}
+	}
 	place := func() {
 		if owner {
 			return
@@ -167,6 +258,7 @@ func (c *call) follow(ctx context.Context, opts Options, onToken func(string)) (
 			return finish(fmt.Errorf("agentpi: %s", m.Error.Message))
 		}
 		if m.Result != nil {
+			release(true)
 			return finish(c.settle(*m.Result, owner, onToken))
 		}
 		if m.Params == nil || c.mine == 0 {
@@ -175,8 +267,41 @@ func (c *call) follow(ctx context.Context, opts Options, onToken func(string)) (
 
 		switch e := m.Params; e.Type {
 		case "text.delta":
-			if owner && !settled {
-				c.deliver(e.Text, onToken)
+			if !owner || settled {
+				continue
+			}
+			if holding() {
+				held.WriteString(e.Text)
+				if time.Now().Before(holdUntil) {
+					continue
+				}
+				release(true)
+				continue
+			}
+			c.deliver(e.Text, onToken)
+		case "message.end":
+			if holding() {
+				release(e.StopReason != "toolUse")
+			}
+		case "tool.started":
+			if holding() {
+				release(false)
+			}
+		case "progress":
+			// The agent's acknowledgement goes ahead of its reply, never into it;
+			// once the reply has begun it is old news. "waiting" repeats it, so
+			// this worker says a short filler of its own instead.
+			if !owner || settled || !opts.SpeakProgress || !slices.Contains(e.SubmissionIDs, c.mine) {
+				continue
+			}
+			switch {
+			case e.Phase == "working" && !acknowledged && !c.hasAnswer() && spoken(e.Text) != "":
+				acknowledged = true
+				c.say(spoken(e.Text), onToken)
+				holdUntil = time.Now().Add(preambleHold)
+			case e.Phase == "waiting" && !waited:
+				waited = true
+				c.say(stillWorking(c.chinese || hasHan(e.Text)), onToken)
 			}
 		case "submission":
 			switch {
@@ -208,7 +333,7 @@ func (c *call) follow(ctx context.Context, opts Options, onToken func(string)) (
 func (c *call) settle(r result, owner bool, onToken func(string)) error {
 	switch {
 	case r.Status != "unanswered":
-		if c.text() == "" && r.Text != "" {
+		if !c.hasAnswer() && r.Text != "" {
 			c.deliver(r.Text, onToken)
 		}
 		return nil

@@ -944,3 +944,133 @@ func TestParseReplicasRefusesBadEntries(t *testing.T) {
 		}
 	}
 }
+
+func newSpeakingLLM(t *testing.T, s *server) *LLM {
+	t.Helper()
+	l := newLLM(t, s, WhenBusyAuto)
+	l.opts.SpeakProgress = true
+	return l
+}
+
+func progress(w *stream, ids []int, phase, text string) {
+	w.event(map[string]any{"type": "progress", "submissionIds": ids, "phase": phase, "text": text})
+}
+
+func TestSpeaksTheAcknowledgementAheadOfTheReply(t *testing.T) {
+	for _, tc := range []struct {
+		name, input string
+		events      func(w *stream)
+		want        []string
+	}{
+		{"said first, as a sentence", "what's on my list", func(w *stream) {
+			progress(w, []int{13}, "working", "I'll check your work list")
+			w.delta("You have two items.")
+		}, []string{"I'll check your work list. ", "You have two items."}},
+		{"once, and not once the reply has begun", "what's on my list", func(w *stream) {
+			w.delta("You have two items.")
+			progress(w, []int{13}, "working", "I'll check your work list.")
+		}, []string{"You have two items."}},
+		{"only for this submission", "what's on my list", func(w *stream) {
+			progress(w, []int{12}, "working", "I'll check something else.")
+			w.delta("You have two items.")
+		}, []string{"You have two items."}},
+		{"a quiet run gets one filler, not the acknowledgement again", "what's on my list", func(w *stream) {
+			progress(w, []int{13}, "working", "I'll check your work list.")
+			progress(w, []int{13}, "waiting", "I'll check your work list.")
+			progress(w, []int{13}, "waiting", "I'll check your work list.")
+			progress(w, []int{13}, "finished", "")
+			w.delta("You have two items.")
+		}, []string{"I'll check your work list. ", "Still working on it. ", "You have two items."}},
+		{"a preamble before a tool isn't said after it", "what's on my list", func(w *stream) {
+			progress(w, []int{13}, "working", "I'll check your work list.")
+			w.delta("I'll check your work list for you.")
+			w.event(map[string]any{"type": "message.end", "text": "I'll check your work list for you.", "stopReason": "toolUse"})
+			w.event(map[string]any{"type": "tool.started", "name": "work_list"})
+			w.delta("You have two items.")
+		}, []string{"I'll check your work list. ", "You have two items."}},
+		{"an answer that follows it is said whole", "what's on my list", func(w *stream) {
+			progress(w, []int{13}, "working", "I'll check your work list.")
+			w.delta("You have")
+			w.delta(" two items.")
+			w.event(map[string]any{"type": "message.end", "text": "You have two items.", "stopReason": "stop"})
+		}, []string{"I'll check your work list. ", "You have two items."}},
+		{"without one, the preamble is the only feedback and is said", "what's on my list", func(w *stream) {
+			w.delta("I'll check your work list for you.")
+			w.event(map[string]any{"type": "message.end", "text": "I'll check your work list for you.", "stopReason": "toolUse"})
+			w.event(map[string]any{"type": "tool.started", "name": "work_list"})
+			w.delta(" You have two items.")
+		}, []string{"I'll check your work list for you.", " You have two items."}},
+		{"in the caller's language", "帮我看看本周的工作项", func(w *stream) {
+			progress(w, []int{13}, "working", "我来查一下本周的工作项")
+			progress(w, []int{13}, "waiting", "")
+			w.delta("本周有两项。")
+		}, []string{"我来查一下本周的工作项。", "还在处理，请稍等。", "本周有两项。"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newServer(t, func(w *stream) {
+				w.open(13)
+				w.submission(13, "placed")
+				tc.events(w)
+				w.submission(13, "done")
+				w.result(map[string]any{"status": "done", "submissionId": 13, "text": "ignored"})
+			})
+			var tokens []string
+			got, err := newSpeakingLLM(t, s).ChatStream(alice, user(tc.input), func(d string) { tokens = append(tokens, d) })
+			if err != nil || !slices.Equal(tokens, tc.want) || got != strings.Join(tc.want, "") {
+				t.Fatalf("ChatStream = %q, %v; tokens %q, want %q", got, err, tokens, tc.want)
+			}
+		})
+	}
+}
+
+func TestAcknowledgementsAreQuietWhenTurnedOff(t *testing.T) {
+	s := newServer(t, func(w *stream) {
+		w.open(13)
+		w.submission(13, "placed")
+		progress(w, []int{13}, "working", "I'll check your work list.")
+		progress(w, []int{13}, "waiting", "I'll check your work list.")
+		w.delta("You have two items.")
+		w.submission(13, "done")
+		w.result(map[string]any{"status": "done", "submissionId": 13})
+	})
+	got, err := newLLM(t, s, WhenBusyAuto).ChatStream(alice, user("what's on my list"), nil)
+	if err != nil || got != "You have two items." {
+		t.Fatalf("ChatStream = %q, %v", got, err)
+	}
+}
+
+// A reply with no deltas of its own (a plugin's, or one a resync skipped) is
+// still delivered after an acknowledgement: that was status, not the reply.
+func TestAReplyWithoutDeltasFollowsTheAcknowledgement(t *testing.T) {
+	s := newServer(t, func(w *stream) {
+		w.open(13)
+		w.submission(13, "placed")
+		progress(w, []int{13}, "working", "I'll check your work list.")
+		w.submission(13, "done")
+		w.result(map[string]any{"status": "done", "submissionId": 13, "text": "You have two items."})
+	})
+	got, err := newSpeakingLLM(t, s).ChatStream(alice, user("what's on my list"), nil)
+	if err != nil || got != "I'll check your work list. You have two items." {
+		t.Fatalf("ChatStream = %q, %v", got, err)
+	}
+}
+
+// A held answer goes out once the hold is over, not only when its message ends.
+func TestAHeldAnswerIsSaidWhenTheHoldEnds(t *testing.T) {
+	defer func(hold time.Duration) { preambleHold = hold }(preambleHold)
+	preambleHold = 0
+	s := newServer(t, func(w *stream) {
+		w.open(13)
+		w.submission(13, "placed")
+		progress(w, []int{13}, "working", "I'll check your work list.")
+		w.delta("You have")
+		w.delta(" two items.")
+		w.submission(13, "done")
+		w.result(map[string]any{"status": "done", "submissionId": 13})
+	})
+	var tokens []string
+	_, err := newSpeakingLLM(t, s).ChatStream(alice, user("what's on my list"), func(d string) { tokens = append(tokens, d) })
+	if want := []string{"I'll check your work list. ", "You have", " two items."}; err != nil || !slices.Equal(tokens, want) {
+		t.Fatalf("tokens %q, %v; want %q", tokens, err, want)
+	}
+}

@@ -21,6 +21,7 @@ import (
 	"t10-livekit-agent/internal/provider"
 	_ "t10-livekit-agent/internal/provider/agentpi"
 	_ "t10-livekit-agent/internal/provider/openaicompat"
+	_ "t10-livekit-agent/internal/provider/openaispeech"
 	_ "t10-livekit-agent/internal/provider/qwen"
 	"t10-livekit-agent/internal/telemetry"
 )

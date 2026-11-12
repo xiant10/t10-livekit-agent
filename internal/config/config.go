@@ -61,6 +61,14 @@ type Config struct {
 	QwenTTSModel    string
 	QwenTTSVoice    string
 
+	// OpenAI speech (STT_PROVIDER / TTS_PROVIDER = openai). The key falls back
+	// to OpenAIAPIKey, whose base URL is the LLM's and so is not shared.
+	OpenAISpeechBaseURL string
+	OpenAISpeechAPIKey  string
+	OpenAISTTModel      string
+	OpenAITTSModel      string
+	OpenAITTSVoice      string
+
 	// OpenAI-compatible LLM
 	OpenAIBaseURL string
 	OpenAIAPIKey  string
@@ -169,6 +177,12 @@ func Load() Config {
 		QwenSTTModel:    getenv("QWEN_STT_MODEL", "qwen3-asr-flash-realtime"),
 		QwenTTSModel:    getenv("QWEN_TTS_MODEL", "qwen3-tts-flash-realtime"),
 		QwenTTSVoice:    getenv("QWEN_TTS_VOICE", "Cherry"),
+
+		OpenAISpeechBaseURL: getenv("OPENAI_SPEECH_BASE_URL", "https://api.openai.com/v1"),
+		OpenAISpeechAPIKey:  getenv("OPENAI_SPEECH_API_KEY", getenv("OPENAI_API_KEY", "")),
+		OpenAISTTModel:      getenv("OPENAI_STT_MODEL", "gpt-4o-mini-transcribe"),
+		OpenAITTSModel:      getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts"),
+		OpenAITTSVoice:      getenv("OPENAI_TTS_VOICE", "alloy"),
 
 		OpenAIBaseURL: getenv("OPENAI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
 		OpenAIAPIKey:  getenv("OPENAI_API_KEY", ""),

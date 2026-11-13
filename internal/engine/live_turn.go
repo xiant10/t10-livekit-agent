@@ -210,6 +210,10 @@ type LiveCallController struct {
 	// two at once. Callbacks must return promptly and must not reenter the
 	// controller; they serialize with floor changes.
 	OnState func(context.Context, CallState, uint64)
+	// Greeter, if set, speaks first: one greeting turn before the first real
+	// turn, unless the caller has already started talking. Speech interrupts
+	// it like any reply. See docs/GREETING.md.
+	Greeter Greeter
 
 	// turnVersion is bumped every time the caller starts talking. A turn
 	// captures it at the start and stops touching the sink (or the reply
@@ -555,6 +559,9 @@ func (l *LiveCallController) settleUtterance(turn *liveTurn, outcome string) {
 // runTurns answers transcripts one turn at a time, coalescing any that
 // piled up while the previous turn was running.
 func (l *LiveCallController) runTurns(sink AudioSink) {
+	if l.Greeter != nil {
+		l.handleTurn(nil, sink, 0, l.greeting)
+	}
 	for {
 		first, ok := <-l.turns
 		if !ok {
@@ -574,7 +581,7 @@ func (l *LiveCallController) runTurns(sink AudioSink) {
 				continue
 			}
 			batch = l.coalesce(batch)
-			if l.handleTurn(batch, sink, version) {
+			if l.handleTurn(batch, sink, version, nil) {
 				break
 			}
 		}
@@ -656,14 +663,16 @@ func (l *LiveCallController) bargeIn(sink AudioSink) *liveTurn {
 		if interrupting && l.current != nil {
 			follows = l.current.Turn
 		}
-		l.pending = l.newTurn(follows)
+		l.pending = l.newTurn("live", follows)
 	}
 	return l.pending
 }
 
-func (l *LiveCallController) newTurn(follows *telemetry.Turn) *liveTurn {
+// newTurn starts a turn's trace. mode is "live" for a turn the caller's speech
+// opens, and "greeting" for the agent's first words.
+func (l *LiveCallController) newTurn(mode string, follows *telemetry.Turn) *liveTurn {
 	return &liveTurn{Turn: telemetry.StartTurn(l.callCtx, telemetry.TurnOptions{
-		Mode:    "live",
+		Mode:    mode,
 		Follows: follows,
 		Attrs:   []attribute.KeyValue{attribute.String("identity", l.identity)},
 	})}
@@ -695,10 +704,28 @@ func (l *LiveCallController) setStateLocked(s CallState) {
 	}
 }
 
-func (l *LiveCallController) handleTurn(transcripts []string, sink AudioSink, version uint64) bool {
+// textSource writes a turn's text, streamed to onToken: the model's reply to the
+// caller, or the greeting.
+type textSource func(ctx context.Context, convo *Conversation, onToken func(delta string)) error
+
+// handleTurn answers transcripts with generate's text, the model's reply when nil.
+// No transcripts is the greeting: it starts only if nobody has spoken yet, under
+// the same lock that decides barge-ins, so speech can't start between the check
+// and the turn.
+func (l *LiveCallController) handleTurn(transcripts []string, sink AudioSink, version uint64, generate textSource) bool {
 	l.mu.Lock()
-	if l.pending == nil {
-		l.pending = l.newTurn(nil)
+	if transcripts == nil {
+		if l.turnVersion.Load() != version || l.inFlight.Load() > 0 || l.pending != nil {
+			l.mu.Unlock()
+			slog.InfoContext(l.callCtx, "live call: greeting skipped, the caller spoke first", "identity", l.identity)
+			return false
+		}
+		l.pending = l.newTurn("greeting", nil)
+	} else if l.pending == nil {
+		l.pending = l.newTurn("live", nil)
+	}
+	if generate == nil {
+		generate = l.reply
 	}
 	ctx, cancel := context.WithCancel(l.pending.Context())
 	defer cancel()
@@ -803,7 +830,7 @@ func (l *LiveCallController) handleTurn(transcripts []string, sink AudioSink, ve
 		}
 	}()
 
-	replyErr = l.streamAndSynthesize(ctx, convo, sinkRate, l.ttsSem, speechQueue, superseded)
+	replyErr = l.streamAndSynthesize(ctx, convo, sinkRate, l.ttsSem, speechQueue, superseded, generate)
 	return true
 }
 
@@ -832,6 +859,7 @@ func (l *LiveCallController) streamAndSynthesize(
 	ttsSem chan struct{},
 	speechQueue chan<- pendingChunk,
 	superseded func() bool,
+	generate textSource,
 ) error {
 	chunker := newSpeechChunker(l.cfg.MinChunkRunes, l.cfg.MaxChunkRunes)
 	queue := func(text string) {
@@ -860,7 +888,7 @@ func (l *LiveCallController) streamAndSynthesize(
 	llmStarted := time.Now()
 	var firstToken sync.Once
 	llmCtx, llmEnd := telemetry.StartStage(ctx, "llm.chat_stream")
-	_, err := l.deps.LLM.ChatStream(provider.WithLiveCall(provider.WithSession(llmCtx, l.identity)), convo.Snapshot(), func(delta string) {
+	err := generate(llmCtx, convo, func(delta string) {
 		firstToken.Do(func() {
 			slog.InfoContext(ctx, "live call: llm first token", "identity", l.identity, "ms", time.Since(llmStarted).Milliseconds())
 		})
@@ -890,6 +918,21 @@ func (l *LiveCallController) streamAndSynthesize(
 	}
 	if rest := chunker.flush(); rest != "" {
 		queue(rest)
+	}
+	return nil
+}
+
+// reply is the model's answer to what the caller said.
+func (l *LiveCallController) reply(ctx context.Context, convo *Conversation, onToken func(string)) error {
+	_, err := l.deps.LLM.ChatStream(provider.WithLiveCall(provider.WithSession(ctx, l.identity)), convo.Snapshot(), onToken)
+	return err
+}
+
+// greeting is the agent's first words. It never fails the turn: a greeting
+// that can't be had is silence, never the "can't answer" apology.
+func (l *LiveCallController) greeting(ctx context.Context, _ *Conversation, onToken func(string)) error {
+	if _, err := l.Greeter.Greet(ctx, l.identity, onToken); err != nil && ctx.Err() == nil {
+		slog.WarnContext(ctx, "live call: greeting failed", "identity", l.identity, "err", err)
 	}
 	return nil
 }

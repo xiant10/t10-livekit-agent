@@ -123,7 +123,7 @@ func TestLiveCallController_TurnWarmsTheProvider(t *testing.T) {
 	deps := &Deps{TTS: tts, LLM: &fakeLLM{tokens: []string{"ok."}}, Conversations: NewManager(""), Voice: "Cherry"}
 	ctrl := NewLiveCallController(context.Background(), deps, "bob", testLiveConfig())
 	defer ctrl.stopCall()
-	ctrl.handleTurn([]string{"hello"}, newFakeSink(16000), 0)
+	ctrl.handleTurn([]string{"hello"}, newFakeSink(16000), 0, nil)
 	select {
 	case voice := <-tts.warmed:
 		if voice != "Cherry" {
@@ -213,7 +213,7 @@ func TestLiveCallController_FailedTurnIsSpokenInTheCallersLanguage(t *testing.T)
 		tts := &recordingTTS{}
 		deps := &Deps{TTS: tts, LLM: failingLLM{}, Conversations: NewManager(""), Voice: "Cherry"}
 		ctrl := NewLiveCallController(context.Background(), deps, "bob", testLiveConfig())
-		ctrl.handleTurn([]string{tc.said}, newFakeSink(16000), 0)
+		ctrl.handleTurn([]string{tc.said}, newFakeSink(16000), 0, nil)
 		ctrl.stopCall()
 		if said := tts.said(); !strings.Contains(said, tc.want) {
 			t.Fatalf("after %q the caller heard %q", tc.said, said)

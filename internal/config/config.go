@@ -107,6 +107,13 @@ type Config struct {
 	VoiceMaxCalls     int
 	VoiceDrainSeconds int
 
+	// The call greeting (docs/GREETING.md). VoiceGreetingMode is auto, agent,
+	// fixed or off; VoiceGreeting is the local text, and agent mode's fallback.
+	VoiceGreetingMode      string
+	VoiceGreeting          string
+	VoiceGreetingTimeoutMS int
+	VoiceGreetingPrepare   bool
+
 	// Live-call VAD tuning. VADBargeInMinSpeechMS is the speech-start
 	// debounce used while the agent is already speaking — longer than
 	// VADMinSpeechMS, because cutting a reply off mid-word should take real
@@ -206,6 +213,11 @@ func Load() Config {
 		RedisURL:          getenv("REDIS_URL", ""),
 		VoiceMaxCalls:     getenvInt("VOICE_MAX_CALLS", 0),
 		VoiceDrainSeconds: getenvInt("VOICE_DRAIN_SECONDS", 600),
+
+		VoiceGreetingMode:      getenv("VOICE_GREETING_MODE", "auto"),
+		VoiceGreeting:          getenv("VOICE_GREETING", ""),
+		VoiceGreetingTimeoutMS: getenvInt("VOICE_GREETING_TIMEOUT_MS", 4000),
+		VoiceGreetingPrepare:   getenv("VOICE_GREETING_PREPARE", "true") != "false",
 
 		VADEnergyThreshold:    getenvFloat("VAD_ENERGY_THRESHOLD", 500.0),
 		VADMinSpeechMS:        getenvInt("VAD_MIN_SPEECH_MS", 200),

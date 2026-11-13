@@ -148,7 +148,7 @@ func (s *trackAudioSink) runWriter(ctx context.Context, silence []byte) {
 // goroutine. sessionCtx carries the call's session ID (see
 // telemetry.WithSessionID); every context derived from it below, and hence
 // every log line the engine emits while running this call, carries it too.
-func startLiveCall(sessionCtx context.Context, room *lksdk.Room, deps *engine.Deps, liveCfg engine.LiveConfig, identity string, remote *webrtc.TrackRemote) error {
+func startLiveCall(sessionCtx context.Context, room *lksdk.Room, deps *engine.Deps, liveCfg engine.LiveConfig, identity string, remote *webrtc.TrackRemote, greeter engine.Greeter) error {
 	decoder, err := opuscodec.NewDecoder()
 	if err != nil {
 		return fmt.Errorf("opus decoder: %w", err)
@@ -196,6 +196,7 @@ func startLiveCall(sessionCtx context.Context, room *lksdk.Room, deps *engine.De
 	source := newTrackAudioSource(remote, decoder)
 
 	ctrl := engine.NewLiveCallController(sessionCtx, deps, identity, liveCfg)
+	ctrl.Greeter = greeter
 	// Live-call turns get the same treatment text/voice mode already give
 	// theirs: what the agent heard goes out on roomprotocol.TopicTranscript, and the LLM
 	// reply streams on roomprotocol.TopicChat, both alongside (not instead of) the

@@ -133,7 +133,7 @@ func TestLiveTurnNamesSessionAndFinishesWhatASupersededReplySaid(t *testing.T) {
 	}
 	l := NewLiveCallController(context.Background(), deps, "alice", LiveConfig{})
 	queue := make(chan pendingChunk, 4)
-	err := l.streamAndSynthesize(context.Background(), deps.Conversations.Get("alice"), 16000, l.ttsSem, queue, func() bool { return false })
+	err := l.streamAndSynthesize(context.Background(), deps.Conversations.Get("alice"), 16000, l.ttsSem, queue, func() bool { return false }, l.reply)
 	if err != nil {
 		t.Fatal(err)
 	}

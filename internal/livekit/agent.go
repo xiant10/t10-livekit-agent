@@ -54,7 +54,10 @@ func awaitGrant(ctx context.Context, lookup func() (string, bool)) string {
 // and voice mode handlers, and arms live-call mode to start automatically
 // the moment a participant's microphone track is subscribed — no separate
 // signaling needed to pick a mode.
-func Join(url, token string, deps *engine.Deps, liveCfg engine.LiveConfig) (*lksdk.Room, error) {
+//
+// greet, when not nil, greets each caller once per stay as their call starts,
+// and asks the agent to get that greeting ready as soon as they're seen.
+func Join(url, token string, deps *engine.Deps, liveCfg engine.LiveConfig, greet *greetings) (*lksdk.Room, error) {
 	// The callback closes over this, set before joining: the agent arrives
 	// after the caller, so their track can be subscribed before the join even
 	// returns. NewRoom copies the callback, so it has to come after it.
@@ -70,12 +73,15 @@ func Join(url, token string, deps *engine.Deps, liveCfg engine.LiveConfig) (*lks
 		// in it is its own trace.
 		ctx := provider.WithGrant(telemetry.WithSessionID(context.Background(), rp.SID()), rp.Attributes()[grantAttribute])
 		slog.InfoContext(ctx, "live call: starting", "identity", identity)
+		greeter := greet.forCall(identity, rp.Attributes())
 		go func() {
-			if err := startLiveCall(ctx, room, deps, liveCfg, identity, track); err != nil {
+			if err := startLiveCall(ctx, room, deps, liveCfg, identity, track, greeter); err != nil {
 				slog.InfoContext(ctx, "live call: ended", "identity", identity, "reason", err)
 			}
 		}()
 	}
+
+	cb.OnParticipantConnected = greet.prepare
 
 	room = lksdk.NewRoom(cb)
 
@@ -94,6 +100,9 @@ func Join(url, token string, deps *engine.Deps, liveCfg engine.LiveConfig) (*lks
 
 	if err := room.JoinWithToken(url, token, lksdk.WithAutoSubscribe(true)); err != nil {
 		return nil, err
+	}
+	for _, rp := range room.GetRemoteParticipants() {
+		greet.prepare(rp)
 	}
 	// Not over the listening state a live call set if it started during the join.
 	if len(room.GetRemoteParticipants()) == 0 {

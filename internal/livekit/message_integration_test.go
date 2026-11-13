@@ -61,7 +61,7 @@ func TestMessageRoomSmoke(t *testing.T) {
 	}
 	p := smokeProviders{}
 	deps := &engine.Deps{STT: p, LLM: p, TTS: p, Conversations: engine.NewManager("")}
-	agent, err := Join(cfg.LiveKitURL, token("agent"), deps, engine.LiveConfig{})
+	agent, err := Join(cfg.LiveKitURL, token("agent"), deps, engine.LiveConfig{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

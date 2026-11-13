@@ -58,6 +58,8 @@ type ServeOptions struct {
 	MaxCalls int
 	// Drain is how long calls may run on after shutdown starts.
 	Drain time.Duration
+	// Greeting is how callers are greeted (docs/GREETING.md).
+	Greeting GreetingOptions
 }
 
 // stay is the agent's time in one room.
@@ -408,7 +410,7 @@ func joinRoom(opts ServeOptions, name, joinID string) (stay, error) {
 	deps := *opts.Deps
 	deps.LLM = llm
 	deps.Conversations = engine.NewManager(opts.SystemPrompt)
-	room, err := Join(opts.URL, token, &deps, opts.Live)
+	room, err := Join(opts.URL, token, &deps, opts.Live, newGreetings(opts.Greeting, llm))
 	if err != nil {
 		return nil, err
 	}

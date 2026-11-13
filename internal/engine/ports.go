@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"time"
 
 	"t10-livekit-agent/internal/audio"
@@ -52,6 +53,13 @@ type AudioSink interface {
 	// cap how far ahead of the speaker its own caption text may run (see
 	// LiveCallController.playSpeech).
 	QueuedDuration() time.Duration
+}
+
+// Greeter produces a call's opening line, streamed to onToken as it is written.
+// "" with no error says nothing. internal/livekit's asks the agent for it
+// (session.greet) and falls back to a fixed text of its own; see docs/GREETING.md.
+type Greeter interface {
+	Greet(ctx context.Context, identity string, onToken func(delta string)) (string, error)
 }
 
 // VADProcessor detects speech boundaries in a PCM16 audio stream.

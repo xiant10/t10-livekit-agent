@@ -100,13 +100,28 @@ func ForRoom(llm LLMProvider, stay, room, conversation string) RoomLLM {
 	return roomLLM{LLMProvider: llm, stay: stay, room: room, conversation: conversation}
 }
 
-func (l roomLLM) ChatStream(ctx context.Context, msgs []Message, onToken func(delta string)) (string, error) {
+// scoped names the stay's session for the identity on ctx, and the room's conversation.
+func (l roomLLM) scoped(ctx context.Context) context.Context {
 	identity := SessionFrom(ctx)
 	ctx = WithSessionName(WithSession(ctx, l.stay+"/"+identity), l.room+"/"+identity)
 	if l.conversation != "" {
 		ctx = WithConversation(ctx, l.conversation)
 	}
-	return l.LLMProvider.ChatStream(ctx, msgs, onToken)
+	return ctx
+}
+
+func (l roomLLM) ChatStream(ctx context.Context, msgs []Message, onToken func(delta string)) (string, error) {
+	return l.LLMProvider.ChatStream(l.scoped(ctx), msgs, onToken)
+}
+
+// Greet asks the provider for the call's greeting in this room's session, when it
+// writes greetings at all.
+func (l roomLLM) Greet(ctx context.Context, req GreetRequest, onToken func(delta string)) (string, error) {
+	greeter, ok := l.LLMProvider.(Greeter)
+	if !ok {
+		return "", ErrNoGreeting
+	}
+	return greeter.Greet(l.scoped(ctx), req, onToken)
 }
 
 // Release drops what the provider holds for this room, if it holds anything.

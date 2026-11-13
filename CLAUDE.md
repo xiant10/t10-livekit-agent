@@ -176,6 +176,12 @@ every claim below has a number behind it.
 - **`playSpeech` paces the captions to the audio**, not to the model, and
   holds each chunk until the sink's backlog drops under `MaxLeadMS`. Both
   look like inefficiency and are not — see the comments on the function.
+- **The greeting is a turn.** With `LiveCallController.Greeter` set, the turn
+  worker runs one greeting turn (`handleTurn` with no transcripts, telemetry
+  mode `greeting`) before the first real one, unless the caller already
+  started talking. It shares the chunking, TTS and barge-in of a reply. The
+  agent writes it (`session.greet`); `internal/livekit/greeting.go` falls back
+  to `VOICE_GREETING`. See `docs/GREETING.md`.
 
 ### Sessions, turns, tracing, and metrics
 

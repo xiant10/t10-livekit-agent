@@ -149,8 +149,36 @@ func main() {
 		Claims:       claims,
 		MaxCalls:     cfg.VoiceMaxCalls,
 		Drain:        time.Duration(cfg.VoiceDrainSeconds) * time.Second,
+		Greeting:     greetingOptions(cfg),
 	})
 	slog.InfoContext(ctx, "shut down")
+}
+
+// greetingOptions resolves VOICE_GREETING_MODE=auto: the agent's own greeting
+// when the agent server writes them, else the fixed text when there is one.
+func greetingOptions(cfg config.Config) livekit.GreetingOptions {
+	mode := strings.ToLower(cfg.VoiceGreetingMode)
+	switch mode {
+	case livekit.GreetingAgent, livekit.GreetingFixed, livekit.GreetingOff:
+	case "", "auto":
+		switch {
+		case cfg.LLMProvider == "agent_pi":
+			mode = livekit.GreetingAgent
+		case cfg.VoiceGreeting != "":
+			mode = livekit.GreetingFixed
+		default:
+			mode = livekit.GreetingOff
+		}
+	default:
+		fatal("greeting", fmt.Errorf("VOICE_GREETING_MODE must be auto, agent, fixed or off, got %q", cfg.VoiceGreetingMode))
+	}
+	slog.Info("greeting", "mode", mode, "fallback", cfg.VoiceGreeting != "", "prepare", cfg.VoiceGreetingPrepare)
+	return livekit.GreetingOptions{
+		Mode:    mode,
+		Text:    cfg.VoiceGreeting,
+		Timeout: time.Duration(cfg.VoiceGreetingTimeoutMS) * time.Millisecond,
+		Prepare: cfg.VoiceGreetingPrepare,
+	}
 }
 
 func fatal(what string, err error) {

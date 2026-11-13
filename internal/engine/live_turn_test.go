@@ -604,7 +604,7 @@ func TestLiveCallController_SynthesisFailureIsNeverCaptionedOrRemembered(t *test
 			defer ctrl.stopCall()
 			reply := &recordingSink{}
 			ctrl.NewReplySink = func(context.Context) ReplySink { return reply }
-			ctrl.handleTurn([]string{"hello"}, newFakeSink(16000), 0)
+			ctrl.handleTurn([]string{"hello"}, newFakeSink(16000), 0, nil)
 			if got := strings.TrimSpace(strings.Join(reply.Tokens(), "")); got != "Heard." {
 				t.Fatalf("caption = %q, want only successfully synthesized words", got)
 			}
@@ -635,11 +635,11 @@ func TestLiveCallController_RejectsTurnRacingWithSpeech(t *testing.T) {
 	defer ctrl.stopCall()
 	sink := newFakeSink(16000)
 	ctrl.bargeIn(sink)
-	if ctrl.handleTurn([]string{"fragment"}, sink, 0) {
+	if ctrl.handleTurn([]string{"fragment"}, sink, 0, nil) {
 		t.Fatal("accepted a version invalidated after the quiet check")
 	}
 	ctrl.inFlight.Add(1)
-	if ctrl.handleTurn([]string{"fragment"}, sink, 1) {
+	if ctrl.handleTurn([]string{"fragment"}, sink, 1, nil) {
 		t.Fatal("accepted a turn while STT setup/capture was in progress")
 	}
 	if llm.callCount() != 0 || len(deps.Conversations.Get("bob").Snapshot()) != 0 {
@@ -717,7 +717,7 @@ func TestLiveCallController_SlowFirstChunkTimesOutWithoutReordering(t *testing.T
 	reply := &recordingSink{}
 	ctrl.NewReplySink = func(context.Context) ReplySink { return reply }
 	done := make(chan struct{})
-	go func() { ctrl.handleTurn([]string{"hello"}, newFakeSink(16000), 0); close(done) }()
+	go func() { ctrl.handleTurn([]string{"hello"}, newFakeSink(16000), 0, nil); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
@@ -823,4 +823,3 @@ func TestLiveCallController_VADOverride(t *testing.T) {
 		t.Errorf("assistant message = %q, want 'acknowledged.'", hist[1].Content)
 	}
 }
-

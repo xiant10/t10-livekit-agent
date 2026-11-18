@@ -37,7 +37,12 @@ spec:
           imagePullPolicy: IfNotPresent
           # Logs go to stdout. The default file can't be written here.
           args: [-log-file=]
+          # The worker has no other HTTP server, so its docs get their own port.
+          ports:
+            - {name: docs, containerPort: 18210}
           env:
+            - name: DOCS_ADDR
+              value: ":18210"
             - name: LIVEKIT_URL
               value: ws://livekit.t10.svc.cluster.local:18200
             - name: LLM_PROVIDER
@@ -71,3 +76,17 @@ spec:
         - name: control
           emptyDir:
             sizeLimit: 16Mi
+---
+# Only the docs at /docs/mcp, for t10-docs and coding agents (the workspace's
+# contracts/docs). Any worker answers: their docs are the same.
+apiVersion: v1
+kind: Service
+metadata:
+  name: t10-livekit-agent
+  labels:
+    app.kubernetes.io/name: t10-livekit-agent
+spec:
+  selector:
+    app.kubernetes.io/name: t10-livekit-agent
+  ports:
+    - {name: docs, port: 18210, targetPort: docs}

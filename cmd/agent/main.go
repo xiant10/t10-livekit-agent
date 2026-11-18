@@ -42,6 +42,7 @@ const defaultSystemPrompt = "You are a voice assistant on a live phone call. " +
 	"Being interrupted is normal: when it happens, just answer the new question without remarking on it."
 
 func main() {
+	serveDocs()
 	envPath := flag.String("env", ".env", "path to .env file")
 	identity := flag.String("identity", "agent", "agent participant identity")
 	systemPrompt := flag.String("system-prompt", defaultSystemPrompt, "system prompt for the LLM")

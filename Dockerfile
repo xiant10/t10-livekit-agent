@@ -8,9 +8,11 @@ RUN apk add --no-cache gcc musl-dev pkgconfig opus-dev opusfile-dev
 
 WORKDIR /src
 COPY go.mod go.sum ./
+COPY third_party/t10-modkit ./third_party/t10-modkit
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=1 go build -ldflags="-s -w" -o /out/agent ./cmd/agent
+ARG VERSION=dev
+RUN CGO_ENABLED=1 go build -ldflags="-s -w -X main.version=${VERSION}" -o /out/agent ./cmd/agent
 
 FROM alpine:3.21
 

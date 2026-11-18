@@ -76,3 +76,7 @@ Each text or voice message gets one `agent.message.status` stream, a line of JSO
 | `error` | Ended, with a `message` |
 
 Text and voice messages share one queue per participant, answered in order, and each has 50 seconds. Agent and client must be upgraded together when this contract changes.
+
+## Docs for coding agents
+
+The worker serves this repo's docs for people building on t10 at `POST /docs/mcp`, over MCP and with no token, as the workspace's [docs contract](../../contracts/docs/README.md) describes. It has no other HTTP server, so the docs get their own listener at `DOCS_ADDR`, off when it's empty. `agent docs <addr>` serves only that route, for the contract's suite.

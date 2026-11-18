@@ -1,6 +1,14 @@
+---
+title: "Scaling voice workers"
+audience: operator
+kind: design
+status: current
+summary: "How voice workers share rooms, survive deploys, and keep a call's text in step with its audio."
+---
+
 # Scaling voice workers
 
-How voice workers share rooms, survive deploys, and keep a call's text in step with its audio. [`DESIGN.md`](DESIGN.md) is the worker itself, and the workspace's [`ARCHITECTURE.md`](../../ARCHITECTURE.md), "Communication and scaling", places it in the platform.
+How voice workers share rooms, survive deploys, and keep a call's text in step with its audio. [`design.md`](design.md) is the worker itself, and the workspace's [`ARCHITECTURE.md`](../../ARCHITECTURE.md), "Communication and scaling", places it in the platform.
 
 Status: claims, `VOICE_MAX_CALLS` and draining are built, and two workers run on the local cluster. No load test has run, and clustered LiveKit and TURN are outstanding.
 
@@ -36,7 +44,7 @@ A client in a call has both paths open, so each kind of text needs one source. T
 
 `workbench` holds to this by asking whose turn it is. In a call it shows only text from turns it started, because conversation deltas reach it before the room's stream names the turn. Transcript reads also wait while the agent speaks, or a finished reply would appear early.
 
-**A typed message doesn't cut off speech.** During a call it goes out as `session.prompt` with `whenBusy: "followUp"`, and the reply follows the spoken one. `agent-pi`'s default would let it take over a spoken reply's output, as `AGENT-PI-PROVIDER.md` warns. A later barge-in still interrupts that typed reply, because speech outranks it. This path hasn't been tried on a real call.
+**A typed message doesn't cut off speech.** During a call it goes out as `session.prompt` with `whenBusy: "followUp"`, and the reply follows the spoken one. `agent-pi`'s default would let it take over a spoken reply's output, as `agent-pi-provider.md` warns. A later barge-in still interrupts that typed reply, because speech outranks it. This path hasn't been tried on a real call.
 
 A client outside the call sees the voice turn as ordinary conversation text. It isn't listening, so nothing can run ahead of the audio.
 

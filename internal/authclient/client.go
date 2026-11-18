@@ -1,6 +1,6 @@
 // Package authclient turns a call's agent grant into short-lived tokens from
 // the auth service. The agent holds its own service secret and grant IDs, and
-// never a user's token. See auth-server/docs/service-api.md.
+// never a user's token. See auth-server/docs/guides/service-api.md.
 package authclient
 
 import (

@@ -19,7 +19,7 @@ import (
 )
 
 // The event orderings below were recorded from the real agent-pi harness (see
-// docs/AGENT-PI-PROVIDER.md). A stream carries every session event, including
+// docs/agent-pi-provider.md). A stream carries every session event, including
 // the tail of the run ahead of it, and that is what these tests pin down.
 
 type rpcCall struct {

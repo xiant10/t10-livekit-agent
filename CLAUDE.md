@@ -17,7 +17,7 @@ business logic is dropped, keeping only the generic, reusable shape:
 provider-agnostic STT/LLM/TTS, a turn/conversation model, and a VAD-driven
 live-call loop with barge-in.
 
-**Read `docs/DESIGN.md` first.** It documents the architecture, the
+**Read `docs/design.md` first.** It documents the architecture, the
 DashScope/Qwen realtime wire protocol (reverse-engineered, undocumented at
 this level of detail), the live-call turn-loop sequence, and the deliberate
 simplifications vs. the Python original in more depth than is worth
@@ -127,7 +127,7 @@ once. Redis being down stops new claims, and never ends a call under way.
   a stateful agent server that owns the conversation. Its session and an
   "admitted" callback travel on `ctx` (`provider/turn.go`), so a message can
   reach it while the previous reply is still running, which
-  `AGENT_PI_WHEN_BUSY` decides what to do with. See `docs/AGENT-PI-PROVIDER.md`.
+  `AGENT_PI_WHEN_BUSY` decides what to do with. See `docs/agent-pi-provider.md`.
 - **Transport**: implement `engine.ReplySink` (text) and
   `engine.AudioSource`/`engine.AudioSink` (live audio) the way
   `internal/livekit` does, translate the transport's native messages into
@@ -141,8 +141,8 @@ once. Redis being down stops new claims, and never ends a call under way.
 ### Live-call turn loop essentials
 
 `LiveCallController` (`internal/engine/live_turn.go`) is the most involved
-piece — see `docs/DESIGN.md` §6 for the full picture, and
-`docs/LIVE-CALL-UX.md` for the experience it's built to produce (including
+piece — see `docs/design.md` §6 for the full picture, and
+`docs/live-call-ux.md` for the experience it's built to produce (including
 seven invariants a change here must not break, and how to re-measure any of
 this). Most of what's in there is shaped by measurements from real calls, so
 before changing any of it, check the trace first (§"Observability" below):
@@ -181,7 +181,7 @@ every claim below has a number behind it.
   mode `greeting`) before the first real one, unless the caller already
   started talking. It shares the chunking, TTS and barge-in of a reply. The
   agent writes it (`session.greet`); `internal/livekit/greeting.go` falls back
-  to `VOICE_GREETING`. See `docs/GREETING.md`.
+  to `VOICE_GREETING`. See `docs/greeting.md`.
 
 ### Sessions, turns, tracing, and metrics
 
@@ -194,7 +194,7 @@ and in `LiveCallController.bargeIn` for live turns, which begin at the speech,
 not the reply (`liveTurn`, `live_turn.go`). There is deliberately no span for a
 session: it would only be exported when the call ends. Every turn ends with a
 `turn.outcome`. Log with `slog.InfoContext`/`slog.ErrorContext` (not the plain
-`slog.Info`/`Error`) so the IDs attach automatically. See `docs/DESIGN.md` §7
+`slog.Info`/`Error`) so the IDs attach automatically. See `docs/design.md` §7
 for the span tree and how a trace crosses the room and agent-pi.
 
 `telemetry.StartStage(ctx, name, attrs...)` starts a child span for one

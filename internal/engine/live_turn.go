@@ -212,7 +212,7 @@ type LiveCallController struct {
 	OnState func(context.Context, CallState, uint64)
 	// Greeter, if set, speaks first: one greeting turn before the first real
 	// turn, unless the caller has already started talking. Speech interrupts
-	// it like any reply. See docs/GREETING.md.
+	// it like any reply. See docs/greeting.md.
 	Greeter Greeter
 
 	// turnVersion is bumped every time the caller starts talking. A turn

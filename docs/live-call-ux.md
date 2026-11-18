@@ -1,3 +1,11 @@
+---
+title: "Holding the floor"
+audience: contributor
+kind: design
+status: current
+summary: "Live-call UX: holding and handing back the floor in real time."
+---
+
 # Holding the floor
 
 Observability note: historical measurements and Jaeger commands below predate
@@ -15,7 +23,7 @@ This is the target: the five moments of a turn, the latency budget behind
 them, and the parts that don't meet it yet. Every number here is read off
 a trace of a real call through the Qwen stack — see "How these numbers
 were taken" at the end. For *how* any of it is implemented, see
-`DESIGN.md` §6; this document is the why, that one is the what.
+`design.md` §6; this document is the why, that one is the what.
 
 ---
 

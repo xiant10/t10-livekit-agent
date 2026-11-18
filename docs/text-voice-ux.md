@@ -1,7 +1,15 @@
+---
+title: "Silence is the failure mode"
+audience: contributor
+kind: design
+status: current
+summary: "Text and voice-message UX, where silence is the failure mode."
+---
+
 # Silence is the failure mode
 
 Live-call mode is a fight over one shared floor in real time — see
-[`LIVE-CALL-UX.md`](LIVE-CALL-UX.md). Text and voice-message mode never
+[`live-call-ux.md`](live-call-ux.md). Text and voice-message mode never
 have that fight: nobody is on an open line waiting to be interrupted, so
 there is no floor to hold or hand back. That looks like it should make the
 UX problem easier, and for the parts that are just "stream the tokens as
@@ -36,7 +44,7 @@ addresses them as follows:
   still enter in order, and `AGENT_PI_WHEN_BUSY` decides what happens to that
   reply. With the default, `auto`, it stops where it was and finishes `done`, unless
   tools are running: those finish first.
-  See [`AGENT-PI-PROVIDER.md`](AGENT-PI-PROVIDER.md).
+  See [`agent-pi-provider.md`](agent-pi-provider.md).
 - **Incremental voice output.** A bounded speech-chunk queue feeds one TTS worker
   while the model continues generating. The first sentence can reach the caller
   before the LLM finishes. Each chunk is a complete mono PCM16 WAV, sent on
@@ -87,7 +95,7 @@ behavior. Voice orchestration now lives in `internal/engine/voice.go`
 line numbers below refer to the earlier layout. Current traces are in Grafana/
 Tempo at http://localhost:3002; the Jaeger commands at the end are historical.
 
-For *how* either mode is wired, see `DESIGN.md` §4's mode table; this
+For *how* either mode is wired, see `design.md` §4's mode table; this
 document is the why.
 
 ---
@@ -163,7 +171,7 @@ say back.*
 
 This is the best-designed moment either mode has, and it's inherited
 straight from live-call mode's own rule that a transcript is not the reply
-and shouldn't wait on one (`DESIGN.md` §4's `OnTranscript`). The handler
+and shouldn't wait on one (`design.md` §4's `OnTranscript`). The handler
 sends the transcript on `agent.transcript` (`voice_mode.go:73`) *before*
 calling `RunChatTurn` at all, so the caller learns whether they were heard
 correctly seconds before they'd otherwise learn anything. And when
@@ -183,7 +191,7 @@ moment 1 in text mode.
 *Should feel like: an answer arriving, not a file arriving.*
 
 What actually happens is the opposite of every design decision
-`LIVE-CALL-UX.md` and `DESIGN.md` §6 make about live-call audio. There, a
+`live-call-ux.md` and `design.md` §6 make about live-call audio. There, a
 reply is chunked sentence-by-sentence specifically so time-to-first-audio
 doesn't have to pay for the whole answer. Here, `handleVoiceMessage` waits
 for `RunChatTurn` to finish completely — the full reply text, fully
@@ -244,7 +252,7 @@ happening:
 
 None of these is wrong the way a live-call floor violation is wrong — a
 slow or silent-on-error text reply doesn't step on anything the way
-speaking over a caller does. But the discipline `LIVE-CALL-UX.md` argues
+speaking over a caller does. But the discipline `live-call-ux.md` argues
 for — that the caller should never have to guess what state the agent is
 in — applies just as much to someone staring at an unchanging screen as to
 someone on an open mic.
@@ -265,7 +273,7 @@ go run ./cmd/testclient voice -file sample.wav -out reply.wav
 ```
 
 then pull the trace by the `turn_id` the agent logs for that
-request, the same way `LIVE-CALL-UX.md`'s own "How these numbers were
+request, the same way `live-call-ux.md`'s own "How these numbers were
 taken" does:
 
 ```bash

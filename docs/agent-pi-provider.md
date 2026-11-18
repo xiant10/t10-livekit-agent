@@ -1,3 +1,11 @@
+---
+title: "agent-pi LLM provider: design"
+audience: contributor
+kind: design
+status: current
+summary: "The voice worker's LLM provider that runs each turn on agent-pi."
+---
+
 # agent-pi LLM provider: design
 
 Status: implemented. Tested through LiveKit with `cmd/testclient`, simulated
@@ -316,7 +324,7 @@ therefore stays pending and goes out with the next turn, so no words are lost.
 ### Keeping what the caller heard
 
 The model never sees an aborted answer. Left alone, an interrupt therefore breaks
-a rule in `LIVE-CALL-UX.md` directly: "Never let the model think it said nothing."
+a rule in `live-call-ux.md` directly: "Never let the model think it said nothing."
 The agent would restart the sentence it was cut off in. So this correction is
 required, not optional.
 
@@ -331,7 +339,7 @@ Your previous reply was cut off. The caller heard at most: "杭州是浙江省�
 playback, not what was played. On test calls the caller cut in about 1.3 s into a
 4.3 s chunk, and the whole chunk was reported. "Do not mention this" is there
 because without it the agent said aloud that it would complete the interrupted
-content, which `LIVE-CALL-UX.md` rules out.
+content, which `live-call-ux.md` rules out.
 
 The text comes from one of two places:
 
@@ -451,7 +459,7 @@ locally and immediately, so "it stops, mid-word" does not depend on agent-pi.
 
 `agentpi.wait_ms` shows how long `steer` or `followUp` held a message back, and
 stays near zero with `interrupt`. The `turnId` sent to agent-pi is the trace ID, and a
-`traceparent` header puts agent-pi's spans in the same trace (`DESIGN.md` §7).
+`traceparent` header puts agent-pi's spans in the same trace (`design.md` §7).
 
 ## Why the default is `auto`
 
@@ -566,7 +574,7 @@ What `auto` still costs:
    a second message overtaking the first's reply, and `openaicompat`-style fakes
    staying serial.
 4. **Docs:** update `.env.example`, `CLAUDE.md`, and the "One message turn per
-   identity" section of `TEXT-VOICE-UX.md`, which stops being true for this
+   identity" section of `text-voice-ux.md`, which stops being true for this
    provider.
 5. **End to end:** run the assistant app with `AUTH_KIND=static` and use
    `cmd/testclient text` and `cmd/testclient live -interrupt-file`, in each mode.

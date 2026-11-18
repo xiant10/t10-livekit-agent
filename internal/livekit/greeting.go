@@ -29,7 +29,7 @@ const (
 )
 
 // GreetingOptions is how a caller is greeted when their microphone arrives
-// (docs/GREETING.md).
+// (docs/greeting.md).
 type GreetingOptions struct {
 	// Mode is GreetingAgent, GreetingFixed or GreetingOff.
 	Mode string

@@ -28,7 +28,7 @@ type greetResult struct {
 // Greet asks the agent for the call's greeting with session.greet, on the call's
 // session and under the caller's grant, as a turn would. The agent writes it into
 // the conversation; its words stream to onToken as they come. A harness without
-// the method answers provider.ErrNoGreeting. See docs/GREETING.md.
+// the method answers provider.ErrNoGreeting. See docs/greeting.md.
 func (l *LLM) Greet(ctx context.Context, req provider.GreetRequest, onToken func(string)) (string, error) {
 	key := provider.SessionFrom(ctx)
 	if key == "" {

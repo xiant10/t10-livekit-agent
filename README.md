@@ -170,9 +170,9 @@ t10-agent/
 │   └── testclient/        # CLI client for testing text, voice, and live calls
 ├── deploy/                # Deployment configs and Prometheus/Grafana provisions
 ├── docs/                  # Detailed design and UX specifications
-│   ├── DESIGN.md          # Wire protocol and architecture deep dive
-│   ├── LIVE-CALL-UX.md    # Real-time audio performance and barge-in invariants
-│   └── TEXT-VOICE-UX.md   # Text and voice message UX guidelines
+│   ├── design.md          # Wire protocol and architecture deep dive
+│   ├── live-call-ux.md    # Real-time audio performance and barge-in invariants
+│   └── text-voice-ux.md   # Text and voice message UX guidelines
 ├── internal/
 │   ├── audio/             # PCM/WAV processing, Opus codec bindings, and VAD
 │   ├── config/            # Environment and runtime configuration

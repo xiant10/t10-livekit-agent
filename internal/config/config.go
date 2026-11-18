@@ -107,7 +107,7 @@ type Config struct {
 	VoiceMaxCalls     int
 	VoiceDrainSeconds int
 
-	// The call greeting (docs/GREETING.md). VoiceGreetingMode is auto, agent,
+	// The call greeting (docs/greeting.md). VoiceGreetingMode is auto, agent,
 	// fixed or off; VoiceGreeting is the local text, and agent mode's fallback.
 	VoiceGreetingMode      string
 	VoiceGreeting          string

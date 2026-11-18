@@ -2,7 +2,7 @@ package roomprotocol
 
 // Topic constants define the LiveKit text-stream and byte-stream topics
 // this agent uses. All topics share one LiveKit room per conversation.
-// See docs/DESIGN.md §4 for the full protocol.
+// See docs/design.md §4 for the full protocol.
 const (
 	// TopicChat carries streamed text replies (agent → client) and text
 	// messages (client → agent).
@@ -65,7 +65,7 @@ const (
 
 // Tracing attributes, on any stream that belongs to a turn: whichever end
 // starts the turn sends these and the other joins its trace. A peer that sends
-// none is still answered, in a trace of its own. See docs/DESIGN.md §7.
+// none is still answered, in a trace of its own. See docs/design.md §7.
 const (
 	AttrTurnID      = "turn_id"
 	AttrTraceparent = "traceparent"

@@ -19,7 +19,7 @@ type GreetRequest struct {
 }
 
 // Greeter is a provider that writes a call's greeting itself: agent-pi's
-// session.greet (docs/GREETING.md). The text streams to onToken; "" with no
+// session.greet (docs/greeting.md). The text streams to onToken; "" with no
 // error means the agent chose to say nothing, such as for a call coming back.
 type Greeter interface {
 	Greet(ctx context.Context, req GreetRequest, onToken func(delta string)) (string, error)

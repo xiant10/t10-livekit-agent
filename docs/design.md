@@ -1,3 +1,11 @@
+---
+title: "Design"
+audience: contributor
+kind: design
+status: current
+summary: "The voice worker's design."
+---
+
 # Design
 
 System ownership, future auth/business projects, and review findings are in
@@ -177,8 +185,8 @@ Live-call mode needs no explicit "start call" signal: `internal/livekit/agent.go
 arms it via `RoomCallback.OnTrackSubscribed` — any subscribed audio track
 starts a `LiveCallController` for that participant.
 
-[`TEXT-VOICE-UX.md`](TEXT-VOICE-UX.md) covers the experience text and
-voice-message mode are built to produce; [`LIVE-CALL-UX.md`](LIVE-CALL-UX.md)
+[`text-voice-ux.md`](text-voice-ux.md) covers the experience text and
+voice-message mode are built to produce; [`live-call-ux.md`](live-call-ux.md)
 (and §6 below) cover the live-call case.
 
 Live-call mode publishes on every channel a client can listen on, via
@@ -257,7 +265,7 @@ compact hand-rolled client (no SDK dependency).
 `internal/engine/live_turn.go`'s `LiveCallController` is the most involved
 piece, and the part most shaped by what real calls turned out to do rather
 than by what the design expected. This section is the mechanism;
-[`LIVE-CALL-UX.md`](LIVE-CALL-UX.md) is the experience it exists to
+[`live-call-ux.md`](live-call-ux.md) is the experience it exists to
 produce — the five moments of a turn, the measured latency budget, and the
 invariants a change here must not break.
 
@@ -577,7 +585,7 @@ and is authoritative. Reply streams remain plain append-only text.
 
 ## Text and voice-message completion contract
 
-See [TEXT-VOICE-UX.md](TEXT-VOICE-UX.md#current-behavior-september-13-2026) for
+See [text-voice-ux.md](text-voice-ux.md#current-behavior-september-13-2026) for
 current behavior and checks. `agent.message.status` is a per-request JSONL stream,
 separate from live-call `agent.state`. Status, transcript, text and audio carry
 `request_id`; voice WAV streams also carry zero-based `chunk_index`. A final

@@ -58,7 +58,7 @@ type ServeOptions struct {
 	MaxCalls int
 	// Drain is how long calls may run on after shutdown starts.
 	Drain time.Duration
-	// Greeting is how callers are greeted (docs/GREETING.md).
+	// Greeting is how callers are greeted (docs/greeting.md).
 	Greeting GreetingOptions
 }
 

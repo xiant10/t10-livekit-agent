@@ -1,6 +1,14 @@
+---
+title: "t10-livekit-agent room protocol"
+audience: consumer
+kind: reference
+status: current
+summary: "The LiveKit room protocol a client uses to talk to the voice worker: topics, streams, attributes."
+---
+
 # t10-livekit-agent room protocol
 
-`t10-livekit-agent` serves no HTTP API. A client talks to it inside a LiveKit room, over text streams, byte streams and an audio track, and this page is that contract. The topics and attributes are [`internal/roomprotocol/topics.go`](../internal/roomprotocol/topics.go), whose copy in each client the workspace checks compare. [`DESIGN.md`](DESIGN.md) explains the agent, [`TEXT-VOICE-UX.md`](TEXT-VOICE-UX.md) and [`LIVE-CALL-UX.md`](LIVE-CALL-UX.md) the experience each mode is built to give, and [`GREETING.md`](GREETING.md) the greeting.
+`t10-livekit-agent` serves no HTTP API. A client talks to it inside a LiveKit room, over text streams, byte streams and an audio track, and this page is that contract. The topics and attributes are [`internal/roomprotocol/topics.go`](../internal/roomprotocol/topics.go), whose copy in each client the workspace checks compare. [`design.md`](design.md) explains the agent, [`text-voice-ux.md`](text-voice-ux.md) and [`live-call-ux.md`](live-call-ux.md) the experience each mode is built to give, and [`greeting.md`](greeting.md) the greeting.
 
 ## Joining
 

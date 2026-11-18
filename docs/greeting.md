@@ -1,3 +1,11 @@
+---
+title: "Call greeting: the voice worker's part"
+audience: contributor
+kind: design
+status: current
+summary: "The voice worker's part of the call greeting."
+---
+
 # Call greeting: the voice worker's part
 
 Status: built 2026-11-12 on `feat/call-greeting`, not committed. The agent's part, with variables and `session.greet`, is [`agent-ti/docs/greeting.md`](../../agent-ti/docs/greeting.md).

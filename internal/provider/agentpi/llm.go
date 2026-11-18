@@ -5,7 +5,7 @@
 //
 // Every message is submitted the same way whether or not the agent is busy
 // (see Options.WhenBusy), so there is no busy check to race against. See
-// docs/AGENT-PI-PROVIDER.md for the design and the event orderings it relies on.
+// docs/agent-pi-provider.md for the design and the event orderings it relies on.
 package agentpi
 
 import (
@@ -104,7 +104,7 @@ type Options struct {
 	WhenBusy      string
 
 	// SpeakProgress says the agent's acknowledgement ahead of its reply, and a
-	// short "still working" when a run goes quiet (docs/AGENT-PI-PROVIDER.md).
+	// short "still working" when a run goes quiet (docs/agent-pi-provider.md).
 	SpeakProgress bool
 
 	AdmissionTimeout time.Duration

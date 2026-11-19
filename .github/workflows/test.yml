@@ -1,0 +1,23 @@
+name: test
+
+# Builds and tests every push to main and every pull request. GitHub sets CI, so
+# a test that needs the database fails here instead of skipping.
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # The cgo binding to libopus, as the Dockerfile installs it.
+      - run: sudo apt-get update && sudo apt-get install -y libopus-dev libopusfile-dev pkg-config
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -p 1 ./...

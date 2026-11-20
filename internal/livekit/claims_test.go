@@ -184,16 +184,19 @@ func TestLeavesAndReleasesWhenTheCallEnds(t *testing.T) {
 	now := time.Now()
 	s.reconcile(context.Background(), now)
 	settled(t, s, "a")
+	// The room is still listed, so this pass may join it again with a new stay:
+	// the one to check is the stay the call ended in.
 	f.mu.Lock()
-	f.stays["a"].callers.Store(0)
+	ended := f.stays["a"]
 	f.mu.Unlock()
+	ended.callers.Store(0)
 	s.reconcile(context.Background(), now.Add(roomGrace))
 	deadline := time.Now().Add(time.Second)
 	for claims.releases() == 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if !f.stays["a"].left.Load() || claims.releases() != 1 {
-		t.Fatalf("left = %v, releases = %d", f.stays["a"].left.Load(), claims.releases())
+	if !ended.left.Load() || claims.releases() != 1 {
+		t.Fatalf("left = %v, releases = %d", ended.left.Load(), claims.releases())
 	}
 }
 

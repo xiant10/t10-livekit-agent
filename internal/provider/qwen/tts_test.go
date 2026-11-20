@@ -157,10 +157,24 @@ func TestDeadSpareFallsBackToAFreshSession(t *testing.T) {
 	}
 }
 
+// dialled waits for the spare's dial, which Warm makes in the background, so the
+// count after a synthesis doesn't depend on which finished first.
+func dialled(t *testing.T, f *fakeRealtime, n int32) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for f.dials.Load() < n && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := f.dials.Load(); got != n {
+		t.Fatalf("dials = %d before the synthesis, want %d", got, n)
+	}
+}
+
 func TestSpareForAnotherVoiceIsNotUsed(t *testing.T) {
 	f := &fakeRealtime{deltas: [][]byte{{1, 0}}}
 	tts := newFakeTTS(t, f)
 	tts.Warm(context.Background(), "Serena")
+	dialled(t, f, 1)
 	if _, _, err := tts.Synthesize(context.Background(), "你好", "Cherry"); err != nil {
 		t.Fatal(err)
 	}
@@ -175,6 +189,7 @@ func TestSpareForAnotherCallIsNotUsed(t *testing.T) {
 	f := &fakeRealtime{deltas: [][]byte{{1, 0}}}
 	tts := newFakeTTS(t, f)
 	tts.Warm(provider.WithGrant(context.Background(), "grt_acme"), "")
+	dialled(t, f, 1)
 	if _, _, err := tts.Synthesize(provider.WithGrant(context.Background(), "grt_globex"), "你好", ""); err != nil {
 		t.Fatal(err)
 	}

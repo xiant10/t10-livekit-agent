@@ -79,4 +79,4 @@ Text and voice messages share one queue per participant, answered in order, and 
 
 ## Docs for coding agents
 
-The worker serves this repo's docs for people building on t10 at `POST /docs/mcp`, over MCP and with no token, as the workspace's [docs contract](../../contracts/docs/README.md) describes. It has no other HTTP server, so the docs get their own listener at `DOCS_ADDR`, off when it's empty. `agent docs <addr>` serves only that route, for the contract's suite.
+The worker serves this repo's docs for people building on t10 at `POST /docs/mcp`, over MCP and with no token, as the workspace's [docs contract](../../contracts/docs/README.md) describes. It takes no calls over HTTP, so the docs share a small listener at `LIVEKIT_AGENT_LISTEN_ADDR`, off when it's empty, with `GET /healthz`, `200` while the process runs, and `GET /readyz`, `200` until a `SIGTERM` starts the drain and `503` after. `t10-livekit-agent docs <addr>` serves only the docs route, for the contract's suite.

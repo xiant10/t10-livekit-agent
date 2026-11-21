@@ -12,13 +12,19 @@ COPY third_party/t10-modkit ./third_party/t10-modkit
 RUN go mod download
 COPY . .
 ARG VERSION=dev
-RUN CGO_ENABLED=1 go build -ldflags="-s -w -X main.version=${VERSION}" -o /out/agent ./cmd/agent
+RUN CGO_ENABLED=1 go build -ldflags="-s -w -X main.version=${VERSION}" -o /out/t10-livekit-agent ./cmd/t10-livekit-agent
 
 FROM alpine:3.21
 
 RUN apk add --no-cache opus opusfile ca-certificates
 
-COPY --from=build /out/agent /usr/local/bin/agent
+COPY --from=build /out/t10-livekit-agent /usr/local/bin/t10-livekit-agent
 
-ENTRYPOINT ["/usr/local/bin/agent"]
+USER 65534:65534
+# The docs and health routes, when LIVEKIT_AGENT_LISTEN_ADDR is set.
+EXPOSE 18210
+
+ENTRYPOINT ["/usr/local/bin/t10-livekit-agent"]
+# Logs go to stderr: the default file can't be written by this user.
+CMD ["-log-file="]
 

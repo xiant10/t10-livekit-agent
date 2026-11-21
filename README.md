@@ -66,7 +66,7 @@ A high-performance, real-time voice agent orchestration service built in Go on t
 └─────────────────┘      └─────────────────┘      └─────────────────┘
 ```
 
-- **`cmd/agent`**: The daemon process connecting to a LiveKit room.
+- **`cmd/t10-livekit-agent`**: The daemon process connecting to a LiveKit room.
 - **`cmd/testclient`**: An interactive CLI test harness to exercise text, voice, and live call modes against a running agent.
 - **`internal/engine`**: Turn controller, VAD speech detection, utterance coalescing, sentence chunking, and playback pacing.
 - **`internal/livekit`**: Subscribes to participant tracks, translates audio frames to Opus/PCM, and implements engine audio sinks.
@@ -117,7 +117,7 @@ Alternatively, run only the LiveKit server in Docker and execute the agent direc
 docker compose up livekit-server
 
 # Terminal 2: Run agent on host
-go run ./cmd/agent
+go run ./cmd/t10-livekit-agent
 ```
 
 The agent joins every room with someone in it within about a second, and leaves
@@ -182,7 +182,7 @@ t10-agent/
 │   ├── roomauth/          # LiveKit token generation
 │   ├── roomprotocol/      # Shared topic and attribute definitions
 │   └── telemetry/         # OpenTelemetry tracing, metrics, and session/turn IDs
-├── docker-compose.yml     # Local orchestration for LiveKit, Agent, and LGTM
+├── compose.yml     # Local orchestration for LiveKit, Agent, and LGTM
 ├── Dockerfile             # Multi-stage production container build
 └── go.mod
 ```

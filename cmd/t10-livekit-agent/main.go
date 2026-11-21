@@ -42,11 +42,11 @@ const defaultSystemPrompt = "You are a voice assistant on a live phone call. " +
 	"Being interrupted is normal: when it happens, just answer the new question without remarking on it."
 
 func main() {
-	serveDocs()
+	draining := serveHTTP()
 	envPath := flag.String("env", ".env", "path to .env file")
 	identity := flag.String("identity", "agent", "agent participant identity")
 	systemPrompt := flag.String("system-prompt", defaultSystemPrompt, "system prompt for the LLM")
-	logPath := flag.String("log-file", "t10-agent.log", "diagnostic log file (empty disables file logging)")
+	logPath := flag.String("log-file", "t10-livekit-agent.log", "diagnostic log file (empty disables file logging)")
 	flag.Parse()
 
 	if err := config.LoadDotEnv(*envPath); err != nil {
@@ -73,7 +73,7 @@ func main() {
 	slog.SetDefault(slog.New(telemetry.NewLogHandler(telemetry.NewOTelLogHandler(baseHandler))))
 
 	// Wires every telemetry.StartTurn/StartStage span and metric this
-	// process produces to a real OTLP backend (see docker-compose.yml's
+	// process produces to a real OTLP backend (see compose.yml's
 	// otel-collector service). Nothing to do if unset — every telemetry.*
 	// call already degrades to a correctly-propagating no-op without it.
 	if cfg.OTELExporterEndpoint != "" {
@@ -139,6 +139,7 @@ func main() {
 	defer stop()
 	// The first signal starts the drain. A second one ends the process.
 	context.AfterFunc(ctx, stop)
+	context.AfterFunc(ctx, draining)
 	livekit.Serve(ctx, livekit.ServeOptions{
 		URL:          cfg.LiveKitURL,
 		APIKey:       cfg.LiveKitAPIKey,

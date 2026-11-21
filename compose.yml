@@ -34,7 +34,7 @@ services:
 
   agent:
     build: .
-    image: t10-agent:latest
+    image: t10-livekit-agent:latest
     container_name: t10-livekit-agent
     restart: unless-stopped
     # Longer than VOICE_DRAIN_SECONDS, so a stop lets calls finish.

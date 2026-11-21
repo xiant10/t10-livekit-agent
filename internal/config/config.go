@@ -138,7 +138,7 @@ type Config struct {
 	// OTELExporterEndpoint is an OTLP/gRPC host:port (e.g.
 	// "otel-collector:4317", no scheme) to export traces and metrics to.
 	// Empty disables tracing/metrics export entirely — see
-	// internal/telemetry.SetupOTel and docker-compose.yml.
+	// internal/telemetry.SetupOTel and compose.yml.
 	OTELExporterEndpoint string
 }
 

@@ -8,8 +8,6 @@ independent Go module and git repo. A sibling `mac-client/` repo (see its own
 agent; the two share no code (separate Go modules can't import each
 other's `internal/` packages) but do share the same LiveKit room/server.
 
-## What this is
-
 A small, runnable voice agent built around the STT→LLM→TTS pattern on top of
 [LiveKit](https://livekit.io). It's a deliberately simplified Go sibling of a
 larger Python project (`livekit-agent`, a sales-CRM voice assistant) — all
@@ -23,7 +21,7 @@ this level of detail), the live-call turn-loop sequence, and the deliberate
 simplifications vs. the Python original in more depth than is worth
 duplicating here.
 
-## Commands
+## Build and test
 
 Building on the host requires `libopus`, `libopusfile`, and `pkg-config`
 (cgo binding for Opus): `brew install opus opusfile pkgconf` on macOS. The
@@ -42,7 +40,7 @@ Running the full stack (LiveKit dev server + agent + observability) via
 Docker Compose:
 
 ```bash
-cp .env.example .env   # fill in DASHSCOPE_API_KEY, OPENAI_*; LiveKit devkey/secret already match docker-compose.yml
+cp .env.example .env   # fill in DASHSCOPE_API_KEY, OPENAI_*; LiveKit devkey/secret already match compose.yml
 docker compose up --build
 
 # in another terminal — testclient always runs on the host, exercising each mode:
@@ -54,7 +52,7 @@ go run ./cmd/testclient live  -file sample.wav -out reply.wav \
 
 This also brings up `otel-lgtm` (Grafana, traces, metrics and logs) — see
 "Observability" below. The containerized `agent` always exports to them;
-`go run ./cmd/agent` on the host only does if `OTEL_EXPORTER_OTLP_ENDPOINT`
+`go run ./cmd/t10-livekit-agent` on the host only does if `OTEL_EXPORTER_OTLP_ENDPOINT`
 is set in `.env` (see `.env.example`).
 
 To iterate on the agent without a container rebuild per change, run only the
@@ -62,8 +60,15 @@ LiveKit server via Compose and the agent on the host:
 
 ```bash
 docker compose up livekit-server
-go run ./cmd/agent   # separate terminal; joins each room with someone in it
+go run ./cmd/t10-livekit-agent   # separate terminal; joins each room with someone in it
 ```
+
+## Read first
+
+- `docs/design.md`, the architecture, the DashScope/Qwen realtime protocol and the live-call turn loop
+- `docs/api.md`
+- `docs/live-call-ux.md`, before changing the live call
+- `docs/agent-pi-provider.md`
 
 ## Architecture
 
@@ -74,7 +79,7 @@ Primary runtime dependency direction:
   `LLMProvider`, `TTSProvider`) plus a name→factory registry
   (`RegisterSTT`/`RegisterLLM`/`RegisterTTS`, `registry.go`). Concrete
   backends live in subpackages (`qwen/`, `openaicompat/`) and self-register
-  via `init()` — the `database/sql` driver pattern. `cmd/agent/main.go`
+  via `init()` — the `database/sql` driver pattern. `cmd/t10-livekit-agent/main.go`
   blank-imports whichever backends should be linked in; the actual choice is
   a `*_PROVIDER` env var read through `internal/config`.
 - **`internal/engine`** — the transport-agnostic pipeline: per-participant
@@ -94,7 +99,7 @@ Primary runtime dependency direction:
 
 - **`internal/roomprotocol`** — SDK-free topics and stream attributes, used by
   the adapter and testclient. Workspace checks compare the client copy.
-- **`internal/roomauth`** — development token minting, used by cmd/agent and
+- **`internal/roomauth`** — development token minting, used by cmd/t10-livekit-agent and
   cmd/testclient. A future auth project will own production admission/token APIs.
 - **`cmd/testclient`** — server integration harness; imports the contract, auth
   helper and audio utilities, never the server adapter or engine.
@@ -119,7 +124,7 @@ once. Redis being down stops new claims, and never ends a call under way.
 - **Model providers**: implement one of the three interfaces in
   `internal/provider/{stt,llm,tts}.go`, register it via `provider.RegisterXxx`
   in an `init()` in a new subpackage, blank-import that subpackage from
-  `cmd/agent/main.go`, point the matching `*_PROVIDER` env var at the
+  `cmd/t10-livekit-agent/main.go`, point the matching `*_PROVIDER` env var at the
   registered name. The LLM side needs even less: `internal/provider/openaicompat`
   works against any OpenAI-compatible endpoint, so swapping models is often
   just an `.env` change (`OPENAI_BASE_URL`/`OPENAI_API_KEY`/`OPENAI_MODEL`).
@@ -207,13 +212,13 @@ so its duration is how long the agent actually held the floor — the single
 most useful number when a call felt like being talked at rather than talked
 with. The root `conversation.turn` span starts earlier, at the speech, and has
 `turn.first_audio_ms`, how long the caller waited. All of this is a no-op until
-`telemetry.SetupOTel` is called (see `cmd/agent/main.go`, gated on
+`telemetry.SetupOTel` is called (see `cmd/t10-livekit-agent/main.go`, gated on
 `OTEL_EXPORTER_OTLP_ENDPOINT`) — every call site works identically, and
 `TurnID` and `Traceparent` keep returning real values either way.
 
 ### Observability
 
-`docker-compose.yml` runs `otel-lgtm` (`grafana/otel-lgtm:latest`), an
+`compose.yml` runs `otel-lgtm` (`grafana/otel-lgtm:latest`), an
 all-in-one container bundling the OpenTelemetry Collector, Tempo (traces),
 Loki (logs), Prometheus/Mimir (metrics), and Grafana (unified UI at
 http://localhost:3002) alongside the agent. The containerized agent always
@@ -262,12 +267,12 @@ OpenAI-compatible endpoint settings, agent-pi settings, VAD tuning
 `engine.LiveConfig`, which fills in defaults for anything left unset).
 
 The `-system-prompt` flag defaults to a prompt written specifically for the
-live-call case (`cmd/agent/main.go`). Keeping replies to a couple of spoken
+live-call case (`cmd/t10-livekit-agent/main.go`). Keeping replies to a couple of spoken
 sentences is a turn-taking property, not a style preference: a model that
 answers at length holds the floor for most of a minute, and the caller's only
 way out is to interrupt it.
 
-## Rules for every t10 repo
+## Rules
 
 - This image serves its consumer docs at `/docs/mcp` with no token (the workspace's `contracts/docs/`). Anything marked `audience: consumer` is public to whoever reaches the service, so keep secrets and internal notes out, or mark the doc `contributor`.
 - `third_party/t10-modkit` is a snapshot of `t10-modkit`: change it there, then run the workspace's `scripts/sync-modkit.sh` (its web-kit loop overwrites `web/src/kit` in workbench and t10-property, so check that diff). `make check` fails when a copy drifts.

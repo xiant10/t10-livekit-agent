@@ -216,7 +216,7 @@ would misattribute it.
 ### Package and config
 
 New package `internal/provider/agentpi`, registered as `agent_pi` and
-blank-imported from `cmd/agent/main.go`.
+blank-imported from `cmd/t10-livekit-agent/main.go`.
 
 | Env var | Default | Meaning |
 |---|---|---|

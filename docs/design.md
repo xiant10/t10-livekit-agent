@@ -461,7 +461,7 @@ outlive its parent span; that is what happened, not a clock problem.
 `telemetry.StartStage(ctx, name, attrs...)` is the one call that drives both a
 span and the `t10.stage.duration`/`t10.stage.calls` metrics, tagged by `stage`
 and `error`. All of this is a no-op until `telemetry.SetupOTel` installs an SDK
-(gated on `OTEL_EXPORTER_OTLP_ENDPOINT` in `cmd/agent/main.go`): `StartTurn` then
+(gated on `OTEL_EXPORTER_OTLP_ENDPOINT` in `cmd/t10-livekit-agent/main.go`): `StartTurn` then
 mints a trace ID itself, so logs and propagation behave the same either way.
 
 Log call sites use the `*Context` slog variants. `telemetry.NewLogHandler` adds
@@ -504,13 +504,13 @@ and logs; the older files in `deploy/` are not used by this Compose stack.
 
 ## 9. Running it
 
-`docker-compose.yml` brings up a local LiveKit dev server and the agent
+`compose.yml` brings up a local LiveKit dev server and the agent
 together — the LiveKit devkey/secret in `keys`/`LIVEKIT_KEYS` are wired to
 `.env`'s `LIVEKIT_API_KEY`/`LIVEKIT_API_SECRET` via Compose's own `.env`
 variable substitution, so both stay in sync automatically:
 
 ```bash
-cp .env.example .env   # fill in DASHSCOPE_API_KEY, OPENAI_*; LiveKit keys already match docker-compose.yml
+cp .env.example .env   # fill in DASHSCOPE_API_KEY, OPENAI_*; LiveKit keys already match compose.yml
 
 docker compose up --build
 
@@ -543,7 +543,7 @@ just the LiveKit server via Compose and the agent on the host:
 
 ```bash
 docker compose up livekit-server
-go run ./cmd/agent   # separate terminal; needs libopus (below)
+go run ./cmd/t10-livekit-agent   # separate terminal; needs libopus (below)
 ```
 
 Building the agent binary directly on the host requires `libopus` and
@@ -558,7 +558,7 @@ Go. The Docker build installs the Debian equivalents itself
 **Add a new STT/LLM/TTS provider**: implement the relevant interface in
 `internal/provider/{stt,llm,tts}.go`, register it via `provider.RegisterXxx`
 in an `init()` in a new subpackage, blank-import that subpackage from
-`cmd/agent/main.go`, and point the matching `*_PROVIDER` env var at its
+`cmd/t10-livekit-agent/main.go`, and point the matching `*_PROVIDER` env var at its
 registered name.
 
 **Add a new transport**: implement `engine.ReplySink` for text replies and

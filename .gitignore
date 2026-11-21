@@ -49,4 +49,5 @@ Thumbs.db
 # Temporary and log files
 tmp/
 *.log
+/t10-livekit-agent.log
 /t10-agent.log

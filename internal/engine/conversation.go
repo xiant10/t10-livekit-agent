@@ -71,7 +71,7 @@ func (m *Manager) Get(identity string) *Conversation {
 }
 
 // Deps bundles the three pipeline providers and shared conversation state
-// that both RunChatTurn and LiveCallController need. Built once in cmd/agent
+// that both RunChatTurn and LiveCallController need. Built once in cmd/t10-livekit-agent
 // and handed to whichever transport adapter is in use.
 type Deps struct {
 	STT           provider.STTProvider

@@ -27,21 +27,29 @@ spec:
       terminationGracePeriodSeconds: 660
       securityContext:
         runAsNonRoot: true
-        # The image sets no user.
         runAsUser: 65534
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: t10-livekit-agent
-          image: t10-agent:latest
+          image: t10-livekit-agent:latest
           imagePullPolicy: IfNotPresent
           # Logs go to stdout. The default file can't be written here.
           args: [-log-file=]
-          # The worker has no other HTTP server, so its docs get their own port.
+          # The worker takes no calls over HTTP: this port holds only its docs
+          # and health routes.
           ports:
-            - {name: docs, containerPort: 18210}
+            - {name: http, containerPort: 18210}
+          # Ready until a SIGTERM starts the drain, while calls finish.
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            periodSeconds: 10
+            failureThreshold: 6
           env:
-            - name: DOCS_ADDR
+            - name: LIVEKIT_AGENT_LISTEN_ADDR
               value: ":18210"
             - name: LIVEKIT_URL
               value: ws://livekit.t10.svc.cluster.local:18200
@@ -89,4 +97,4 @@ spec:
   selector:
     app.kubernetes.io/name: t10-livekit-agent
   ports:
-    - {name: docs, port: 18210, targetPort: docs}
+    - {name: docs, port: 18210, targetPort: http}

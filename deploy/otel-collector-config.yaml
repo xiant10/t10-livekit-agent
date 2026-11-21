@@ -1,5 +1,5 @@
 # OTel Collector config for the t10 stack. agent (containerized) and client
-# (a host binary) both export OTLP/gRPC here — see docker-compose.yml's
+# (a host binary) both export OTLP/gRPC here — see compose.yml's
 # otel-collector service and internal/telemetry.SetupOTel. This is the only
 # thing either process talks to directly; it fans traces out to Jaeger and
 # metrics out to a Prometheus-scrapeable endpoint, so the backends can

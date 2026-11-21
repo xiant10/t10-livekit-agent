@@ -189,6 +189,10 @@ t10-agent/
 
 ---
 
+## Contact
+
+Questions, feedback or commercial enquiries: [hi@tacten.ai](mailto:hi@tacten.ai).
+
 ## License
 
 This project is licensed under the [Apache License 2.0](LICENSE).

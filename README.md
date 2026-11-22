@@ -77,7 +77,7 @@ A high-performance, real-time voice agent orchestration service built in Go on t
 
 ## Prerequisites
 
-- **Go**: 1.22+ (tested on Go 1.26.1)
+- **Go**: 1.27.4, as `go.mod` says; an older Go downloads it
 - **Native Audio Libraries** (required for cgo Opus bindings on host):
   - **macOS**: `brew install opus opusfile pkgconf`
   - **Debian / Ubuntu**: `apt-get install libopus-dev libopusfile-dev pkg-config`

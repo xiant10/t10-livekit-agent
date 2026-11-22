@@ -2,7 +2,7 @@
 
 # cgo binding to libopus (internal/audio/opuscodec) needs libopus + pkg-config
 # at build time, and libopus's shared runtime library at run time.
-FROM golang:1.27.3-alpine AS build
+FROM golang:1.27.4-alpine AS build
 
 RUN apk add --no-cache gcc musl-dev pkgconfig opus-dev opusfile-dev
 

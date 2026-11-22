@@ -2,6 +2,8 @@ module t10-livekit-agent
 
 go 1.26.1
 
+toolchain go1.27.3
+
 require (
 	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/coder/websocket v1.8.15

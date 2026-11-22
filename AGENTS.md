@@ -29,11 +29,10 @@ Docker build (below) installs its own Debian equivalents, so this is only
 needed for `go build`/`go test` on the host.
 
 ```bash
-go build ./...                       # build everything
-go vet ./...                         # vet
-go test ./...                        # run all tests
-go test ./internal/engine/...        # test one package
-go test ./internal/engine/ -run TestLiveCallController_BargeIn  # single test
+make lint      # go vet, gofmt
+make test      # every test; needs nothing running
+make ci        # what CI runs
+go test ./internal/engine/ -run TestLiveCallController_BargeIn  # one test
 ```
 
 Running the full stack (LiveKit dev server + agent + observability) via
